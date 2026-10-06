@@ -1,3 +1,7 @@
 app/Daily Log.app/
 app/DailyLog.zip
 .DS_Store
+.claude/
+.build/
+app/Resources/AppIcon.iconset/
+app/Tools/.build/
