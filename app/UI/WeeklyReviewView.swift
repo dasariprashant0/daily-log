@@ -1,4 +1,5 @@
-// WeeklyReviewView.swift - read-only week summary built from saved pages, with "Copy as markdown".
+// WeeklyReviewView.swift - the week review: every day of the week is a tile that opens (empty weeks included), a counts line
+// ("Logged 4 of 5 · 1 skipped · 2 not logged"), cards for what was written, and "Copy as markdown".
 import SwiftUI
 
 struct WeeklyReviewView: View {
@@ -9,13 +10,24 @@ struct WeeklyReviewView: View {
             Column {
                 if let w = model.week {
                     header(w)
-                    if w.loggedCount == 0 && w.skippedCount == 0 && !w.days.contains(where: { $0.doc?.hasContent == true }) { empty }
-                    else { content(w) }
+                    tiles
+                    if hasNothing(w) { empty } else { content(w) }
                 }
             }
         }
         .background(Theme.bg)
         .onAppear { model.refreshWeek() }
+    }
+
+    private func hasNothing(_ w: WeekSummary) -> Bool {
+        let c = model.weekCounts()
+        return c.logged == 0 && c.skipped == 0 && !w.days.contains(where: { $0.doc?.hasContent == true || $0.doc?.isSkipped == true })
+    }
+
+    private func countsLine() -> String {
+        let c = model.weekCounts()
+        if c.total == 0 { return model.weekTiles().allSatisfy({ $0.status == .off || $0.status == .future }) ? "No working days to count yet." : "Nothing to count yet." }
+        return "Logged \(c.logged) of \(c.total)" + (c.skipped > 0 ? " · \(c.skipped) skipped" : "") + (c.notLogged > 0 ? " · \(c.notLogged) not logged" : "")
     }
 
     private func header(_ w: WeekSummary) -> some View {
@@ -31,26 +43,40 @@ struct WeeklyReviewView: View {
                         .disabled(!model.canShowNextWeek)
                 }.buttonStyle(SecondaryButtonStyle())
             }
-            Text("Logged \(w.loggedCount) of \(w.workdayCount)" + (w.skippedCount > 0 ? " · \(w.skippedCount) skipped" : "") + " · streak \(model.streak.current)")
-                .font(Theme.font(13)).foregroundColor(Theme.textSecondary).monospacedDigit()
-            HStack {
+            Text(countsLine()).font(Theme.font(13)).foregroundColor(Theme.textSecondary).monospacedDigit()
+            HStack(spacing: Theme.s3) {
                 Picker("Group by", selection: $model.weekGrouping) {
                     Text("Day").tag(WeekGrouping.day); Text("Section").tag(WeekGrouping.section)
                 }.pickerStyle(.segmented).fixedSize().accessibilityLabel("Group by")
                 Spacer()
+                if model.weekHasUnlogged && !hasNothing(w) {
+                    Button("Catch up this week") { model.catchUpThisWeek() }.buttonStyle(SecondaryButtonStyle())
+                }
                 Button { model.copyWeek() } label: {
                     Label(model.copiedFlash ? "Copied ✓" : "Copy as markdown", systemImage: model.copiedFlash ? "checkmark" : "doc.on.doc")
                 }.buttonStyle(SecondaryButtonStyle()).help("Copy as markdown (⇧⌘C)")
             }
-            Rectangle().fill(Theme.border).frame(height: 1).padding(.top, Theme.s2)
-        }.padding(.bottom, Theme.s6)
+        }.padding(.bottom, Theme.s4)
+    }
+
+    /// Seven tiles, Monday (or the chosen first weekday) to Sunday. Each opens its day; days off are dimmed but still open.
+    private var tiles: some View {
+        HStack(spacing: Theme.weekTileGap) {
+            ForEach(model.weekTiles()) { t in WeekTileView(model: model, t: t).frame(maxWidth: .infinity) }
+        }
+        .accessibilityElement(children: .contain).accessibilityLabel("Days of this week")
+        .padding(.bottom, Theme.s6)
     }
 
     private var empty: some View {
         VStack(spacing: Theme.s3) {
             Text("Nothing logged this week yet.").font(Theme.font(15)).foregroundColor(Theme.textSecondary)
-            Button("Go to today") { model.openToday() }.buttonStyle(TextButtonStyle())
-        }.frame(maxWidth: .infinity).padding(.vertical, Theme.s12)
+            HStack(spacing: Theme.s3) {
+                if model.weekHasUnlogged { Button("Catch up this week") { model.catchUpThisWeek() }.buttonStyle(PrimaryButtonStyle()) }
+                Button("Go to today") { model.openToday() }
+                    .buttonStyle(TextButtonStyle())
+            }
+        }.frame(maxWidth: .infinity).padding(.vertical, Theme.s8)
     }
 
     @ViewBuilder private func content(_ w: WeekSummary) -> some View {
@@ -60,6 +86,37 @@ struct WeeklyReviewView: View {
             } else {
                 ForEach(Array(w.sections.enumerated()), id: \.offset) { _, s in WeekSectionCard(model: model, section: s) }
             }
+        }
+    }
+}
+
+private struct WeekTileView: View {
+    @ObservedObject var model: AppModel
+    let t: WeekTile
+
+    var body: some View {
+        HoverReader { hovering in
+            Button { if t.opens { model.select(.day(t.day)) } } label: {
+                VStack(spacing: 3) {
+                    Text(t.weekday).font(Theme.font(11)).foregroundColor(Theme.textSecondary)
+                    HStack(spacing: 4) {
+                        Text("\(t.number)").font(Theme.font(15, .semibold)).monospacedDigit().foregroundColor(Theme.textPrimary)
+                        DayMark(status: t.status, size: 8, showsMissed: !t.isToday)
+                    }
+                    Text(t.bottom).font(Theme.font(11, t.status == .missed ? .semibold : .regular)).lineLimit(1)
+                        .foregroundColor(t.status == .missed ? Theme.accentText : Theme.textSecondary)
+                        .frame(height: 14)
+                }
+                .frame(maxWidth: .infinity).frame(height: Theme.weekTileH)
+                .background(Theme.rect(Theme.radiusLg).fill(hovering && t.opens ? Theme.hover : Theme.surface))
+                .overlay(Theme.rect(Theme.radiusLg).stroke(t.isToday ? Theme.accent : Theme.border, lineWidth: t.isToday ? 1.5 : 1))
+                .opacity(t.status == .off ? 0.65 : (t.opens ? 1 : 0.5))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(t.opens ? "\(model.shortDate(t.day)): \(model.statusWord(t.day))" : "Upcoming")
+            .accessibilityLabel(model.spokenStatus(t.day))
+            .accessibilityHint(t.opens ? "Opens this day" : "")
         }
     }
 }
@@ -103,24 +160,23 @@ struct ClampedMarkdown: View {
     }
 }
 
+/// A day's writing (or its skip), for the By day view. Days with nothing are the tiles' job, not a card.
 private struct WeekDayCard: View {
     @ObservedObject var model: AppModel
     let d: WeekDay
     var body: some View {
-        let hasText = (d.doc?.hasContent ?? false) && d.status != .skipped
-        if d.status == .future || (!hasText && d.status != .skipped && d.status != .missed) { EmptyView() }
-        else if d.status == .missed && !model.isWorkday(d.day) { EmptyView() }
+        let skipped = d.doc?.isSkipped == true
+        let hasText = (d.doc?.hasContent ?? false) && !skipped
+        if !skipped && !hasText { EmptyView() }
         else {
             ReviewCard {
                 HStack {
                     Text(model.shortDate(d.day)).font(Theme.font(15, .semibold)).foregroundColor(Theme.textPrimary)
                     Spacer()
-                    if d.status == .skipped {
+                    if skipped {
                         let r = d.doc?.skipReason ?? ""
                         Text("Skipped" + (r.isEmpty ? "" : " · \(r)")).font(Theme.font(12)).foregroundColor(Theme.textSecondary)
-                    } else if !hasText {
-                        Text("Not logged yet").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
-                    } else if d.status == .partial {
+                    } else if d.doc?.status(minWords: model.minWords) == .partial {
                         Text("\(d.doc?.words ?? 0) of \(model.minWords) words").font(Theme.font(12)).foregroundColor(Theme.textSecondary).monospacedDigit()
                     }
                     Button("Open") { model.select(.day(d.day)) }.buttonStyle(TextButtonStyle())

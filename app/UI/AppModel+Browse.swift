@@ -72,6 +72,67 @@ extension AppModel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.copiedFlash = false }
     }
     func weekTitle(_ w: WeekSummary) -> String {
-        "Week of \(DayKey.format(w.weekStart, "d", cal)) to \(DayKey.format(w.weekEnd, "d MMM yyyy", cal))"
+        let sameMonth = w.weekStart.prefix(7) == w.weekEnd.prefix(7), sameYear = w.weekStart.prefix(4) == w.weekEnd.prefix(4)
+        let from = DayKey.format(w.weekStart, sameMonth ? "d" : (sameYear ? "d MMM" : "d MMM yyyy"), cal)
+        return "Week of \(from) to \(DayKey.format(w.weekEnd, "d MMM yyyy", cal))"
     }
+
+    // MARK: the week's days (every day of the week is a tile that opens, empty weeks included)
+    /// The seven days of the shown week, first weekday per Settings. Status comes from `status(of:)`, so days before the
+    /// log start read as muted, never as unlogged.
+    func weekTiles() -> [WeekTile] {
+        guard let w = week else { return [] }
+        return (0..<7).compactMap { i in
+            guard let d = DayKey.adding(w.weekStart, i, cal) else { return nil }
+            let st = status(of: d)
+            let words = w.days.first(where: { $0.day == d })?.doc?.words ?? 0
+            let bottom: String
+            switch st {
+            case .logged, .partial: bottom = Fmt.plural(words, "word")
+            case .skipped: let r = skipReasons[d] ?? ""; bottom = r.isEmpty ? "Skipped" : r
+            case .missed: bottom = "Write"
+            case .off, .future: bottom = ""
+            }
+            return WeekTile(day: d, weekday: DayKey.format(d, "EEE", cal), number: Int(d.suffix(2)) ?? 0, status: st,
+                            bottom: bottom, isToday: d == today, opens: d <= today)
+        }
+    }
+
+    /// "Logged 4 of 5 · 1 skipped · 2 not logged": every working day that has happened is exactly one of the three.
+    /// Today counts once it is written or skipped, never as "not logged" while the day is still going.
+    func weekCounts() -> WeekCounts {
+        var c = WeekCounts()
+        for t in weekTiles() {
+            switch t.status {
+            case .logged: c.logged += 1
+            case .skipped: c.skipped += 1
+            case .partial, .missed: if isWorkday(t.day) && t.day < today && !isBeforeLogStart(t.day) { c.notLogged += 1 }
+            case .off, .future: break
+            }
+        }
+        return c
+    }
+    var weekHasUnlogged: Bool { weekCounts().notLogged > 0 }
+
+    /// "Catch up this week": the Catch up screen scoped to the shown week.
+    func catchUpThisWeek() {
+        guard let w = week else { return }
+        select(.catchUp)
+        catchRange = w.weekStart...w.weekEnd
+    }
+}
+
+struct WeekTile: Identifiable, Equatable {
+    var id: String { day }
+    var day: String
+    var weekday: String          // "Mon"
+    var number: Int
+    var status: DayStatus
+    var bottom: String           // "63 words", "Write", "Leave", or nothing
+    var isToday: Bool
+    var opens: Bool              // false for days that have not happened yet
+}
+struct WeekCounts: Equatable {
+    var logged = 0, skipped = 0, notLogged = 0
+    var total: Int { logged + skipped + notLogged }
 }

@@ -12,6 +12,15 @@ enum Theme {
                            blue: CGFloat(v & 0xFF) / 255, alpha: 1)
         })
     }
+    /// Like `dyn`, with an alpha per appearance (the focus ring is the accent at 30% / 40%).
+    static func dynAlpha(_ light: UInt32, _ la: CGFloat, _ dark: UInt32, _ da: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil) { a in
+            let isDark = a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let v = isDark ? dark : light
+            return NSColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+                           blue: CGFloat(v & 0xFF) / 255, alpha: isDark ? da : la)
+        })
+    }
     static let bg = dyn(0xF9FAF9, 0x141716)
     static let surface = dyn(0xFFFFFF, 0x1C201E)
     static let sidebar = dyn(0xF0F2F0, 0x101312)
@@ -33,6 +42,14 @@ enum Theme {
     static let dangerTint = dyn(0xFBE9E7, 0x3D1F1C)
     static let heat: [Color] = [dyn(0xE6EBE8, 0x222826), dyn(0xBFE3D3, 0x17493B), dyn(0x7CC6A9, 0x1F7059),
                                 dyn(0x2E9F7E, 0x2D9C7D), dyn(0x0E7A5F, 0x5FD6B2)]
+    static let focusRing = dynAlpha(0x0E7A5F, 0.30, 0x45C29C, 0.40)
+
+    // v4 deltas (DESIGN_V4 section 2): sizes only, no new colours.
+    static let sidebarWash = 0.80                               // sidebar fill over the split view's material; 1.0 under Reduce Transparency
+    static let calMin: CGFloat = 28, calMax: CGFloat = 34, calH: CGFloat = 30, calGap: CGFloat = 2, calMark: CGFloat = 6
+    static let popCellW: CGFloat = 36, popCellH: CGFloat = 32
+    static let weekTileH: CGFloat = 64, weekTileGap: CGFloat = 8
+    static let catchRowH: CGFloat = 44, sessionBarH: CGFloat = 44, badgeH: CGFloat = 18
 
     static let s1: CGFloat = 4, s2: CGFloat = 8, s3: CGFloat = 12, s4: CGFloat = 16, s5: CGFloat = 20
     static let s6: CGFloat = 24, s8: CGFloat = 32, s10: CGFloat = 40, s12: CGFloat = 48

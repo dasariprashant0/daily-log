@@ -170,6 +170,41 @@ final class LogStore {
         return s
     }
 
+    /// A string that changes whenever a day file is added, removed, renamed, edited or touched: the sorted (name, mtime in ns, size)
+    /// of the YYYY-MM-DD.md files, one per line. Only readdir and stat are called, no file is opened or read (3,650 files take a few
+    /// ms even in an unoptimised build), so the UI can poll it and reload only when it changed. assets/, a backups folder, hidden,
+    /// foreign files and folders are ignored; a symlinked day file counts through its target. A missing folder throws like the other reads.
+    func folderStamp() throws -> String {
+        try checkFolder(writable: false)
+        guard let handle = opendir(dir.path) else { throw LogError.io(String(cString: strerror(errno))) }
+        defer { closedir(handle) }
+        let fd = dirfd(handle)
+        var rows = [(key: Int, line: String)]()
+        while let entry = readdir(handle) {
+            withUnsafePointer(to: &entry.pointee.d_name) { field in
+                field.withMemoryRebound(to: CChar.self, capacity: 14) { name in
+                    guard let key = LogStore.dayNumber(ofFileName: name) else { return }       // not YYYY-MM-DD.md: never even stat'ed
+                    var st = stat()
+                    guard fstatat(fd, name, &st, 0) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return }
+                    rows.append((key, "\(String(cString: name)) \(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec) \(st.st_size)"))
+                }
+            }
+        }
+        rows.sort { $0.key < $1.key }
+        return rows.map { $0.line }.joined(separator: "\n")
+    }
+    /// 20261005 for the NUL-terminated name "2026-10-05.md" (digits at the date positions, nothing before or after); nil for any other name.
+    private static func dayNumber(ofFileName p: UnsafePointer<CChar>) -> Int? {
+        guard p[4] == 45, p[7] == 45, p[10] == 46, p[11] == 109, p[12] == 100, p[13] == 0 else { return nil }   // - - . m d NUL
+        var n = 0
+        for i in [0, 1, 2, 3, 5, 6, 8, 9] {
+            let digit = Int(p[i]) - 48
+            guard digit >= 0 && digit <= 9 else { return nil }
+            n = n * 10 + digit
+        }
+        return n
+    }
+
     // MARK: write
     private func write(_ text: String, day: String) throws {
         try checkFolder()

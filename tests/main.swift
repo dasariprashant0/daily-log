@@ -1249,6 +1249,814 @@ test("default storage folder is Gloamlog for new installs") {
     expect(Settings.defaultFolder.lastPathComponent == "Gloamlog" && Settings().storageFolder.lastPathComponent == "Gloamlog")
 }
 
+// MARK: M1 core helpers (C2 to C6)
+func calIn(_ tz: String = "America/New_York", firstWeekday: Int = 2, locale: String? = nil) -> Calendar {
+    var c = Calendar(identifier: .gregorian)
+    c.timeZone = TimeZone(identifier: tz)!; c.firstWeekday = firstWeekday
+    if let l = locale { c.locale = Locale(identifier: l) }
+    return c
+}
+/// Independent oracle for day arithmetic: proleptic Gregorian in UTC (uses neither DayKey nor the zone under test).
+let utcCal = calIn("UTC", firstWeekday: 1)
+func utcKey(_ d: Date) -> String { let c = utcCal.dateComponents([.year, .month, .day], from: d); return String(format: "%04ld-%02ld-%02ld", c.year!, c.month!, c.day!) }
+func utcDate(_ y: Int, _ m: Int, _ d: Int) -> Date { utcCal.date(from: DateComponents(year: y, month: m, day: d, hour: 12))! }
+
+// MARK: C2 MonthGrid
+func grid(_ y: Int, _ m: Int, _ st: [String: DayStatus] = [:], now: Date = mk(2026, 10, 7), cal c: Calendar = cal,
+          weekdays wd: Set<Int> = workdays, logStart: String? = nil) -> [[MonthCell]] {
+    MonthGrid.rows(year: y, month: m, states: st, now: now, calendar: c, weekdays: wd, logStart: logStart)
+}
+func gridCell(_ g: [[MonthCell]], _ day: String) -> MonthCell? { g.flatMap { $0 }.first { $0.day == day } }
+
+test("month grid: shape and position, Monday-first October 2026") {
+    let g = grid(2026, 10)
+    expect(g.count == 6 && g.allSatisfy { $0.count == 7 }, "6 rows x 7 columns")
+    expect(g.first?.first?.day == "2026-09-28" && g.first?.first?.inMonth == false, "first cell is the Monday on or before the 1st")
+    expect(g.count == 6 && g[0].count == 7 && g[0][3].day == "2026-10-01" && g[0][3].inMonth, "1 Oct is a Thursday: row 0, column 3")
+    expect(g.count == 6 && g[5].count == 7 && g[5][6].day == "2026-11-08" && !g[5][6].inMonth, "last cell, 41 days after the first")
+    let inMonth = g.flatMap { $0 }.filter { $0.inMonth }.map { $0.day }
+    expect(inMonth.count == 31 && inMonth.first == "2026-10-01" && inMonth.last == "2026-10-31", "\(inMonth.count) in-month cells")
+    let all = g.flatMap { $0 }
+    expect(all.filter { !$0.inMonth }.allSatisfy { $0.day < "2026-10-01" || $0.day > "2026-10-31" }, "inMonth is false exactly outside the month")
+    for row in g { for (c, x) in row.enumerated() {
+        expect(DayKey.weekday(x.day, cal) == ((cal.firstWeekday - 1 + c) % 7) + 1, "column \(c) of \(x.day) has the wrong weekday")
+    } }
+}
+test("month grid: Sunday-first calendar, year boundaries, short months still give 6 rows") {
+    let sun = calIn(firstWeekday: 1)
+    let g = grid(2026, 10, cal: sun)
+    expect(g.count == 6 && g[0].count == 7 && g[0][0].day == "2026-09-27" && !g[0][0].inMonth, "Sunday-first: first cell is Sunday 27 Sep")
+    expect(g.count == 6 && g[0].count == 7 && g[0][4].day == "2026-10-01", "1 Oct is column 4 when weeks start on Sunday")
+    for row in g { for (c, x) in row.enumerated() { expect(DayKey.weekday(x.day, sun) == c + 1, "Sunday-first column \(c) = \(x.day)") } }
+    // a month that begins on the first column: 1 Feb 2027 is a Monday, only 4 rows are needed and 6 are still returned
+    let feb = grid(2027, 2)
+    expect(feb.count == 6 && feb[0][0].day == "2027-02-01" && feb[0][0].inMonth, "Feb 2027 starts in column 0")
+    expect(feb.count == 6 && feb[4][0].day == "2027-03-01" && !feb[4][0].inMonth && feb[5][6].day == "2027-03-14", "rows 5 and 6 are March")
+    // year boundaries
+    let dec = grid(2026, 12)
+    expect(dec.count == 6 && dec[0][0].day == "2026-11-30" && dec[5][6].day == "2027-01-10", "December 2026 runs into January 2027")
+    let jan = grid(2027, 1)
+    expect(jan.count == 6 && jan[0][0].day == "2026-12-28" && jan[0][4].day == "2027-01-01" && jan[0][4].inMonth, "January 2027 starts in December 2026")
+}
+test("month grid: leap February has 29 in-month cells, century and ordinary years 28") {
+    func count(_ y: Int, _ c: Calendar = cal) -> Int { grid(y, 2, cal: c).flatMap { $0 }.filter { $0.inMonth }.count }
+    expect(count(2028) == 29 && count(2024) == 29 && count(2000) == 29, "leap years")
+    expect(count(2026) == 28 && count(2027) == 28 && count(2100) == 28, "ordinary years, and 2100 is not a leap year")
+    expect(count(2028, calIn(firstWeekday: 1)) == 29)
+    let g = grid(2028, 2)
+    expect(gridCell(g, "2028-02-29")?.inMonth == true && gridCell(g, "2028-03-01")?.inMonth == false, "29 Feb is in, 1 Mar is out")
+    expect(g.flatMap { $0 }.map { $0.day }.contains("2028-02-29"))
+    let g26 = grid(2026, 2)
+    expect(gridCell(g26, "2026-02-28")?.inMonth == true && gridCell(g26, "2026-03-01")?.inMonth == false)
+}
+test("month grid: 42 unique consecutive days in DST months, Sunday- and Monday-first, in zones with midnight DST") {
+    // New York DST months explicitly: no duplicate and no missing key (the 23 h and 25 h days).
+    for (y, m) in [(2026, 3), (2026, 11), (2027, 3), (2027, 11), (2028, 3)] {
+        let keys = grid(y, m).flatMap { $0 }.map { $0.day }
+        expect(keys.count == 42 && Set(keys).count == 42, "\(y)-\(m): 42 unique keys, got \(Set(keys).count)")
+        var consecutive = true
+        for i in stride(from: 1, to: keys.count, by: 1) where DayKey.adding(keys[i - 1], 1, cal) != keys[i] { consecutive = false }
+        expect(consecutive && !keys.isEmpty, "\(y)-\(m): consecutive")
+    }
+    // Every month, both week starts, zones whose DST changes at midnight (Beirut, Havana, Santiago, Sao Paulo 2018) or by half an hour.
+    let cases: [(String, Int)] = [("America/New_York", 2026), ("America/Sao_Paulo", 2018), ("Europe/London", 2026), ("Asia/Kolkata", 2026),
+                                  ("Pacific/Auckland", 2026), ("Australia/Lord_Howe", 2026), ("America/Santiago", 2026), ("Asia/Beirut", 2026),
+                                  ("America/Havana", 2026)]
+    var bad = [String](), checked = 0
+    for (tz, year) in cases { for fw in [1, 2] {
+        let c = calIn(tz, firstWeekday: fw)
+        for m in 1...12 {
+            checked += 1
+            let g = grid(year, m, now: mk(year, 6, 15), cal: c)
+            let first = utcDate(year, m, 1)
+            let lead = (utcCal.component(.weekday, from: first) - fw + 7) % 7
+            let want = (0..<42).map { utcKey(utcCal.date(byAdding: .day, value: $0 - lead, to: first)!) }
+            let got = g.flatMap { $0 }.map { $0.day }
+            if g.count != 6 || !g.allSatisfy({ $0.count == 7 }) || got != want { bad.append("\(tz) fw\(fw) \(year)-\(m)") }
+            let inMonth = g.flatMap { $0 }.filter { $0.inMonth }.count
+            if inMonth != utcCal.range(of: .day, in: .month, for: first)!.count { bad.append("\(tz) fw\(fw) \(year)-\(m) in-month=\(inMonth)") }
+        }
+    } }
+    expect(bad.isEmpty && checked == cases.count * 2 * 12, "wrong grids: \(bad.prefix(6)), checked \(checked)")
+}
+test("month grid: statuses come from Status.resolve (logged, partial, skipped, missed, future), today is flagged once") {
+    let st: [String: DayStatus] = ["2026-09-30": .logged, "2026-10-02": .skipped, "2026-10-05": .logged, "2026-10-06": .partial]
+    let g = grid(2026, 10, st)          // now = Wed 7 Oct 2026
+    func s(_ d: String) -> DayStatus? { gridCell(g, d)?.status }
+    expect(s("2026-10-05") == .logged && s("2026-10-06") == .partial && s("2026-10-02") == .skipped, "file states map through")
+    expect(s("2026-09-30") == .logged, "a leading out-of-month cell keeps its state")
+    expect(s("2026-10-01") == .missed, "scheduled, unwritten, after the first page = missed")
+    expect(s("2026-10-07") == .missed && gridCell(g, "2026-10-07")?.isToday == true, "today unlogged is .missed with the today flag")
+    expect(s("2026-10-08") == .future && s("2026-10-31") == .future && s("2026-11-08") == .future, "after today is .future")
+    expect(s("2026-10-10") == .future, "a future Saturday is .future, not .off")
+    expect(s("2026-10-03") == .off && s("2026-10-04") == .off, "past weekend, nothing written = .off")
+    expect(g.flatMap { $0 }.filter { $0.isToday }.map { $0.day } == ["2026-10-07"], "exactly one today cell")
+    expect(g.flatMap { $0 }.filter { $0.status == .skipped }.count == 1 && g.flatMap { $0 }.filter { $0.status == .partial }.count == 1)
+    // today can be an out-of-month cell
+    let sep = grid(2026, 9, now: mk(2026, 10, 1, 9))
+    expect(sep.flatMap { $0 }.filter { $0.isToday }.map { $0.day } == ["2026-10-01"] && gridCell(sep, "2026-10-01")?.inMonth == false, "today as a trailing cell")
+    // viewing other months than today's
+    let later = grid(2026, 11, now: mk(2026, 10, 7))
+    expect(later.flatMap { $0 }.allSatisfy { $0.status == .future && !$0.isToday }, "a month entirely after today: all .future, no today")
+    let earlier = grid(2026, 10, st, now: mk(2026, 11, 20))
+    expect(earlier.flatMap { $0 }.allSatisfy { $0.status != .future && !$0.isToday }, "a month entirely before today: nothing future, no today")
+    expect(gridCell(earlier, "2026-10-30")?.status == .missed && gridCell(earlier, "2026-10-31")?.status == .off)
+}
+test("month grid: isScheduled follows the working weekdays; off days stay .off unless written") {
+    let g = grid(2026, 10, ["2026-09-30": .logged, "2026-10-03": .logged])
+    expect(gridCell(g, "2026-10-05")?.isScheduled == true && gridCell(g, "2026-10-09")?.isScheduled == true, "Mon and Fri are scheduled")
+    expect(gridCell(g, "2026-10-03")?.isScheduled == false && gridCell(g, "2026-10-04")?.isScheduled == false, "Sat and Sun are not")
+    expect(gridCell(g, "2026-10-03")?.status == .logged, "a log on a day off still shows as logged")
+    expect(gridCell(g, "2026-10-04")?.status == .off, "an unwritten day off is .off, never missed")
+    expect(gridCell(g, "2026-10-31")?.isScheduled == false, "isScheduled does not depend on the future")
+    let weekend = grid(2026, 10, ["2026-09-30": .logged], weekdays: [1, 7])
+    expect(gridCell(weekend, "2026-10-03")?.isScheduled == true && gridCell(weekend, "2026-10-05")?.isScheduled == false)
+    expect(gridCell(weekend, "2026-10-03")?.status == .missed && gridCell(weekend, "2026-10-05")?.status == .off, "a weekend schedule flips missed and off")
+}
+test("month grid: the log start cuts missed days to .off; the backfilled page itself still shows") {
+    let st: [String: DayStatus] = ["2026-09-14": .logged, "2026-10-05": .logged]
+    let g = grid(2026, 9, st, logStart: "2026-10-01")
+    expect(gridCell(g, "2026-09-14")?.status == .logged, "the backfilled page is logged")
+    expect(gridCell(g, "2026-09-15")?.status == .off && gridCell(g, "2026-09-30")?.status == .off, "13 to 30 Sep are .off, not missed")
+    expect(gridCell(g, "2026-09-15")?.isScheduled == true, "off because of the start date, not because it is a day off")
+    expect(gridCell(g, "2026-10-01")?.status == .missed, "the log start day itself counts again (trailing cell of the Sep grid)")
+    // without a pinned start the earliest file is the start, which creates the wall of missed days
+    let wall = grid(2026, 9, st, logStart: nil)
+    expect(gridCell(wall, "2026-09-15")?.status == .missed && gridCell(wall, "2026-09-14")?.status == .logged, "nil start = earliest file")
+    // a file before the start keeps its state; an empty day before it is off even if scheduled
+    let late = grid(2026, 10, ["2026-10-05": .logged], logStart: "2026-10-07")
+    expect(gridCell(late, "2026-10-06")?.status == .off && gridCell(late, "2026-10-05")?.status == .logged && gridCell(late, "2026-10-07")?.status == .missed)
+    // a start in the future: nothing before it is missed
+    let fut = grid(2026, 10, [:], logStart: "2026-10-20")
+    expect(fut.flatMap { $0 }.filter { $0.day <= "2026-10-07" }.allSatisfy { $0.status == .off }, "start after today: everything up to today is off")
+    // no files and no start: Status.resolve's own rule (scheduled past days are missed)
+    expect(gridCell(grid(2026, 10), "2026-10-06")?.status == .missed)
+}
+test("month grid: invalid month gives no rows, never a crash") {
+    expect(grid(2026, 0).isEmpty && grid(2026, 13).isEmpty && grid(2026, -1).isEmpty)
+    expect(!grid(2026, 1).isEmpty && !grid(2026, 12).isEmpty)
+}
+
+// MARK: C3 DateJump
+let wed7 = mk(2026, 10, 7, 12)       // Wednesday 7 Oct 2026, noon, New York
+func jump(_ s: String, _ now: Date = wed7, _ c: Calendar = cal) -> String? { DateJump.parse(s, now: now, calendar: c) }
+/// One assertion per row; the message names the input.
+func jumpTable(_ rows: [(String, String?)], now: Date = wed7, cal c: Calendar = cal) {
+    for (input, want) in rows {
+        let got = jump(input, now, c)
+        expect(got == want, "'\(input)' -> \(got ?? "nil"), want \(want ?? "nil")")
+    }
+}
+
+test("date jump: keywords and relative days") {
+    jumpTable([("yesterday", "2026-10-06"), ("today", "2026-10-07"), ("-1", "2026-10-06"), ("-3", "2026-10-04"), ("-0", "2026-10-07"),
+               ("3 days ago", "2026-10-04"), ("1 day ago", "2026-10-06"), ("0 days ago", "2026-10-07"),
+               ("1 week ago", "2026-09-30"), ("2 weeks ago", "2026-09-23"), ("-30", "2026-09-07"),
+               ("-279", "2026-01-01"), ("-280", "2025-12-31")])
+}
+test("date jump: weekday names (fri = most recent on or before today, last fri = strictly before)") {
+    jumpTable([("last fri", "2026-10-02"), ("fri", "2026-10-02"), ("friday", "2026-10-02"), ("last friday", "2026-10-02"),
+               ("wed", "2026-10-07"), ("wednesday", "2026-10-07"), ("weds", "2026-10-07"), ("last wed", "2026-09-30"), ("last wednesday", "2026-09-30"),
+               ("thu", "2026-10-01"), ("thur", "2026-10-01"), ("thurs", "2026-10-01"), ("last thu", "2026-10-01"),
+               ("tue", "2026-10-06"), ("tues", "2026-10-06"), ("tuesday", "2026-10-06"), ("last tue", "2026-10-06"),
+               ("mon", "2026-10-05"), ("last mon", "2026-10-05"), ("sat", "2026-10-03"), ("sun", "2026-10-04"), ("last sun", "2026-10-04"),
+               ("saturday", "2026-10-03"), ("last saturday", "2026-10-03"), ("sunday", "2026-10-04"), ("monday", "2026-10-05")])
+}
+test("date jump: month names; without a year the most recent past occurrence, never a future day") {
+    jumpTable([("2 oct", "2026-10-02"), ("oct 2", "2026-10-02"), ("2 October 2026", "2026-10-02"), ("2026-10-02", "2026-10-02"),
+               ("2nd oct", "2026-10-02"), ("oct 2nd", "2026-10-02"), ("october 2, 2026", "2026-10-02"), ("Oct. 2", "2026-10-02"),
+               ("2 oct 2026", "2026-10-02"), ("oct 2 2026", "2026-10-02"), ("3rd oct", "2026-10-03"), ("1st oct", "2026-10-01"),
+               ("7 oct", "2026-10-07"), ("1 sep", "2026-09-01"), ("1 sept", "2026-09-01"), ("1 september", "2026-09-01"),
+               ("15 jan", "2026-01-15"), ("31 dec", "2025-12-31"), ("2 dec", "2025-12-02"), ("8 oct", "2025-10-08"),
+               ("29 feb", "2024-02-29"), ("29 feb 2024", "2024-02-29"), ("1 jan 2000", "2000-01-01"), ("mar 3", "2026-03-03"),
+               ("3 may", "2026-05-03"), ("8 oct 2025", "2025-10-08"), ("8 oct 2026", nil)])
+}
+test("date jump: numeric dates follow the calendar's locale; ISO never does") {
+    // No locale on the calendar behaves like en_US (deterministic in tests).
+    jumpTable([("10/2", "2026-10-02"), ("10/7", "2026-10-07"), ("10/8", "2025-10-08"), ("10/2/2026", "2026-10-02"), ("10/2/26", "2026-10-02"),
+               ("1/5", "2026-01-05"), ("12/31", "2025-12-31"), ("10.2", "2026-10-02"), ("10-2", "2026-10-02"),
+               ("2026/10/02", "2026-10-02"), ("2026-10-2", "2026-10-02"), ("2026-1-5", "2026-01-05"), ("2026.10.02", "2026-10-02"),
+               ("13/2", nil), ("2/30", nil), ("0/5", nil), ("1/1/00", "2000-01-01"), ("10/2/27", nil)])
+    let us = calIn(locale: "en_US"), gb = calIn(locale: "en_GB"), de = calIn(locale: "de_DE"), ja = calIn(locale: "ja_JP")
+    jumpTable([("10/2", "2026-10-02"), ("10/2/2026", "2026-10-02"), ("2/10", "2026-02-10"), ("13/2", nil)], cal: us)
+    jumpTable([("10/2", "2026-02-10"), ("2/10", "2026-10-02"), ("10/2/2026", "2026-02-10"), ("2/10/26", "2026-10-02"),
+               ("31/12", "2025-12-31"), ("12/31", nil), ("2026-10-02", "2026-10-02"), ("8/10", "2025-10-08")], cal: gb)
+    let inn = calIn(locale: "en_IN")      // the owner's Mac: day first, like en_GB
+    jumpTable([("10/2", "2026-02-10"), ("2/10", "2026-10-02"), ("10/2/2026", "2026-02-10"), ("2026-10-02", "2026-10-02")], cal: inn)
+    expect(cal.locale?.identifier.isEmpty ?? true, "fixture: the harness calendar has no real locale (root), so it must read like en_US")
+    jumpTable([("10.2", "2026-02-10"), ("10.2.", "2026-02-10"), ("2.10.2026", "2026-10-02"), ("2026-10-02", "2026-10-02")], cal: de)
+    jumpTable([("10/2", "2026-10-02"), ("26/10/2", "2026-10-02"), ("2026/10/2", "2026-10-02"), ("2026-10-02", "2026-10-02")], cal: ja)
+    // a locale changes only numeric order, never the words
+    jumpTable([("2 oct", "2026-10-02"), ("oct 2", "2026-10-02"), ("yesterday", "2026-10-06"), ("last fri", "2026-10-02")], cal: gb)
+}
+test("date jump: unreadable, impossible, future and pre-2000 input gives nil") {
+    jumpTable([("tomorrow", nil), ("2027-01-01", nil), ("2026-10-08", nil), ("garbage", nil), ("", nil), ("   ", nil), ("\n\t", nil),
+               ("31 feb", nil), ("30 feb", nil), ("29 feb 2026", nil), ("30 feb 2024", nil), ("2026-02-30", nil), ("2026-02-29", nil),
+               ("2026-13-01", nil), ("2026-00-10", nil), ("2026-10-00", nil), ("2026-10-32", nil), ("32 oct", nil), ("0 oct", nil),
+               ("31 sep", nil), ("31 apr", nil), ("oct", nil), ("2", nil), ("3", nil), ("last", nil), ("last week", nil), ("last garbage", nil),
+               ("fri fri", nil), ("last last fri", nil), ("2 oct oct", nil), ("oct oct 2", nil), ("2 3 oct", nil), ("2 oct 3", nil), ("2 oct 26", nil),
+               ("oct 2026", nil), ("2026 oct 2", nil), ("+3", nil), ("-", nil), ("--3", nil), ("3 days", nil), ("days ago", nil),
+               ("-3 days ago", nil), ("3 days from now", nil), ("in 3 days", nil), ("next fri", nil), ("this fri", nil), ("now", nil),
+               ("1999-12-31", nil), ("31 dec 1999", nil), ("1 jan 1999", nil), ("1900-01-01", nil), ("0000-01-01", nil), ("-99999", nil),
+               ("12/31/99", nil), ("99999999999999999999 days ago", nil), ("-99999999999999999999", nil), ("9999999 weeks ago", nil),
+               ("10000-01-01", nil), ("2026-10-02-1", nil), ("1/2/3/4", nil), ("//", nil), ("1//2", nil), ("10/2/", nil), ("/10/2", nil),
+               ("10/2-2026", nil), ("2026-10", nil), ("٣", nil), ("١٢/٣", nil), ("🎉", nil), ("2 🎉", nil)])
+}
+test("date jump: case, whitespace and punctuation are ignored") {
+    jumpTable([("  YESTERDAY  ", "2026-10-06"), ("LAST FRI", "2026-10-02"), ("Last   Fri", "2026-10-02"), ("\t2 Oct\n", "2026-10-02"),
+               ("OCT 2", "2026-10-02"), ("2 OCTOBER 2026", "2026-10-02"), ("  2026-10-02  ", "2026-10-02"), ("2\u{00A0}oct", "2026-10-02"),
+               ("Oct 2,", "2026-10-02"), ("2 oct,", "2026-10-02"), ("OCTOBER 2ND, 2026", "2026-10-02"), (" -3 ", "2026-10-04"),
+               ("3  DAYS   AGO", "2026-10-04"), ("Fri.", "2026-10-02"), ("last fri.", "2026-10-02")])
+}
+test("date jump: a whole year round-trips through ISO, 'd MMM yyyy', 'd MMM' and -n; weekday names match an independent oracle") {
+    for (now, label) in [(wed7, "2026-10-07"), (mk(2028, 3, 10, 9), "2028-03-10"), (mk(2026, 1, 2, 22), "2026-01-02")] {
+        let today = DayKey.string(now, cal)
+        expect(today == label, "fixture \(label)")
+        var failures = [String](), checked = 0
+        for n in 0..<360 {
+            guard let day = DayKey.adding(today, -n, cal) else { failures.append("adding -\(n)"); continue }
+            let oracle = utcKey(utcCal.date(byAdding: .day, value: -n, to: utcDate(Int(today.prefix(4))!, Int(today.dropFirst(5).prefix(2))!, Int(today.suffix(2))!))!)
+            if day != oracle { failures.append("oracle \(n): \(day) vs \(oracle)") }
+            for input in [day, DayKey.format(day, "d MMM yyyy", cal), DayKey.format(day, "MMMM d, yyyy", cal), DayKey.format(day, "d MMM", cal),
+                          DayKey.format(day, "MMM d", cal), "-\(n)", "\(n) days ago"] {
+                checked += 1
+                if jump(input, now) != day { failures.append("'\(input)' -> \(jump(input, now) ?? "nil"), want \(day)") }
+            }
+        }
+        expect(failures.isEmpty && checked == 360 * 7, "\(label): \(failures.prefix(4)) checked \(checked)")
+    }
+    // weekday names vs a scan with the UTC calendar
+    let names = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+    var bad = [String](), checked = 0
+    for dayOfMonth in 1...31 {
+        let now = mk(2026, 10, dayOfMonth, 12)
+        let todayUTC = utcDate(2026, 10, dayOfMonth)
+        for (i, name) in names.enumerated() {
+            for (input, strict) in [(name, false), ("last " + name, true)] {
+                var k = strict ? 1 : 0
+                while utcCal.component(.weekday, from: utcCal.date(byAdding: .day, value: -k, to: todayUTC)!) != i + 1 { k += 1 }
+                let want = utcKey(utcCal.date(byAdding: .day, value: -k, to: todayUTC)!)
+                checked += 1
+                if jump(input, now) != want { bad.append("\(input) on 2026-10-\(dayOfMonth)") }
+            }
+        }
+    }
+    expect(bad.isEmpty && checked == 31 * 14, "\(bad.prefix(4)) checked \(checked)")
+}
+test("date jump: boundaries (year 2000, new year, DST, leap day, the time zone of `now`)") {
+    jumpTable([("yesterday", "2000-01-02"), ("-2", "2000-01-01"), ("-3", nil), ("last mon", nil), ("mon", "2000-01-03"), ("1 jan", "2000-01-01"),
+               ("31 dec", nil), ("sun", "2000-01-02"), ("2000-01-01", "2000-01-01"), ("1999-12-31", nil)], now: mk(2000, 1, 3, 12))
+    jumpTable([("2 dec", "2025-12-02"), ("last fri", "2025-12-26"), ("-3", "2025-12-30"), ("1 jan", "2026-01-01"), ("3 jan", "2025-01-03"),
+               ("12/31", "2025-12-31")], now: mk(2026, 1, 2, 12))
+    jumpTable([("-1", "2026-11-01"), ("-2", "2026-10-31"), ("last sun", "2026-11-01"), ("3 days ago", "2026-10-30"), ("1 week ago", "2026-10-26"),
+               ("sun", "2026-11-01")], now: mk(2026, 11, 2, 12))                         // day after the 25 h fall-back day
+    jumpTable([("yesterday", "2026-03-08"), ("last sun", "2026-03-08"), ("-2", "2026-03-07"), ("-7", "2026-03-02")], now: mk(2026, 3, 9, 12))   // after the 23 h day
+    jumpTable([("yesterday", "2028-02-29"), ("29 feb", "2028-02-29"), ("-366", "2027-03-01"), ("2028-02-29", "2028-02-29"), ("29 feb 2027", nil),
+               ("1 mar", "2028-03-01"), ("2 mar", "2027-03-02")], now: mk(2028, 3, 1, 12))
+    jumpTable([("29 feb", "2000-02-29"), ("29 feb 2000", "2000-02-29"), ("29 feb 2001", nil)], now: mk(2002, 1, 5, 12))      // most recent leap day, two years back
+    jumpTable([("today", "2026-10-07"), ("yesterday", "2026-10-06"), ("-1", "2026-10-06"), ("tomorrow", nil)], now: mk(2026, 10, 7, 23, 59))
+    jumpTable([("today", "2026-10-07"), ("yesterday", "2026-10-06"), ("wed", "2026-10-07")], now: mk(2026, 10, 7, 0, 1))
+    // the same instant is a different day in another zone: `today` follows the calendar's time zone
+    let instant = utcCal.date(from: DateComponents(year: 2026, month: 10, day: 7, hour: 20))!
+    expect(jump("today", instant, calIn("America/New_York")) == "2026-10-07", "20:00 UTC is still the 7th in New York")
+    expect(jump("today", instant, calIn("Pacific/Auckland")) == "2026-10-08", "and already the 8th in Auckland")
+    expect(jump("yesterday", instant, calIn("Pacific/Auckland")) == "2026-10-07" && jump("2026-10-08", instant, calIn("Pacific/Auckland")) == "2026-10-08")
+    expect(jump("2026-10-08", instant, calIn("America/New_York")) == nil, "the 8th is the future in New York")
+}
+test("date jump: junk and extreme input never crash and never return an unusable day") {
+    let junk = [String(repeating: "9", count: 5000), String(repeating: "a ", count: 3000), String(repeating: "1/", count: 2000), "-" + String(repeating: "9", count: 40),
+                "\u{0000}", "oct\u{0000}2", "2\u{202E}oct", "e\u{0301} 2", "1e3", "0x10", "1_000", "٢٠٢٦-١٠-٠٢", "２０２６-１０-０２", "２ oct", "ⅹ", "½",
+                "last fri fri fri fri", "-9223372036854775808", "9223372036854775807 days ago", "-0 days ago", "00000000000000000002 oct"]
+    for s in junk {
+        let r = jump(s)
+        expect(r == nil || (r! >= "2000-01-01" && r! <= "2026-10-07" && DayKey.date(r!, cal) != nil), "junk '\(s.prefix(20))' -> \(r ?? "nil")")
+    }
+    expect(jump("00000000000000000002 oct") == nil || jump("00000000000000000002 oct") == "2026-10-02")
+}
+
+// MARK: C4 CatchUp and batch skip
+let thu8 = mk(2026, 10, 8, 12)      // Thursday 8 Oct 2026
+func missing(_ st: [String: DayStatus] = [:], now: Date = wed7, weekdays wd: Set<Int> = workdays, logStart: String? = "2026-01-01",
+             window: Int = 30, cal c: Calendar = cal) -> [String] {
+    CatchUp.missing(states: st, now: now, calendar: c, weekdays: wd, logStart: logStart, windowDays: window)
+}
+/// Every entry of a folder (hidden files too) with its bytes: a byte-for-byte comparison of two states of the folder.
+func folderSnapshot(_ dir: URL) throws -> [String: Data] {
+    var out = [String: Data]()
+    for n in try FileManager.default.contentsOfDirectory(atPath: dir.path) {
+        var isDir: ObjCBool = false
+        FileManager.default.fileExists(atPath: dir.appendingPathComponent(n).path, isDirectory: &isDir)
+        out[n] = isDir.boolValue ? Data("<dir>".utf8) : try Data(contentsOf: dir.appendingPathComponent(n))
+    }
+    return out
+}
+
+test("catch up: lists scheduled .missed and .partial days before today, oldest first") {
+    // Wed 7 Oct 2026; Mon-Fri; log start Mon 28 Sep
+    let list = missing(["2026-10-05": .logged], logStart: "2026-09-28")
+    expect(list == ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-06"], "\(list)")
+    expect(!list.contains("2026-10-07"), "never today")
+    expect(!list.contains("2026-10-03") && !list.contains("2026-10-04"), "weekend is not scheduled")
+    expect(list == list.sorted(), "oldest first")
+    // states: partial listed; skipped and logged not; a run of skips leaves the list
+    let st: [String: DayStatus] = ["2026-09-29": .partial, "2026-09-30": .skipped, "2026-10-01": .logged, "2026-10-05": .skipped, "2026-10-06": .skipped]
+    expect(missing(st, logStart: "2026-09-28") == ["2026-09-28", "2026-09-29", "2026-10-02"], "\(missing(st, logStart: "2026-09-28"))")
+    // a partial or even an explicit .missed on a day off is never listed; a logged day off neither
+    let off: [String: DayStatus] = ["2026-10-03": .partial, "2026-10-04": .missed, "2026-09-26": .logged, "2026-09-27": .partial]
+    expect(missing(off, logStart: "2026-09-21") == ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28", "2026-09-29",
+                                                    "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06"], "\(missing(off, logStart: "2026-09-21"))")
+    // future days and today's own state never matter
+    expect(!missing(["2026-10-07": .partial, "2026-10-09": .logged, "2026-10-08": .partial], logStart: "2026-10-05").contains("2026-10-07"))
+    expect(missing(["2026-10-07": .partial, "2026-10-08": .partial], logStart: "2026-10-05") == ["2026-10-05", "2026-10-06"])
+    // every day written: nothing to catch up
+    expect(missing(["2026-10-05": .logged, "2026-10-06": .logged, "2026-10-02": .logged], logStart: "2026-10-02").isEmpty)
+    // other schedules
+    expect(missing([:], weekdays: [1, 7], logStart: "2026-09-28") == ["2026-10-03", "2026-10-04"], "weekend schedule")
+    expect(missing([:], weekdays: Set(1...7), logStart: "2026-10-03") == ["2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06"], "every day")
+    // on a Monday yesterday is a Sunday: the list ends on Friday
+    expect(missing([:], now: mk(2026, 10, 5, 9), logStart: "2026-09-28") == ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02"])
+}
+test("catch up: window edges are exact and windowDays is clamped to 7...365") {
+    // Thu 8 Oct: 30 days back = Tue 8 Sep (included), 31 back = Mon 7 Sep (excluded)
+    let l30 = missing([:], now: thu8, window: 30)
+    expect(l30.first == "2026-09-08" && !l30.contains("2026-09-07") && l30.last == "2026-10-07", "\(l30.first ?? "nil") ... \(l30.last ?? "nil")")
+    expect(l30.count == 22, "22 workdays between 8 Sep and 7 Oct, got \(l30.count)")
+    // 7 days back from Wed 7 Oct = Wed 30 Sep (included), Tue 29 Sep (excluded)
+    expect(missing([:], window: 7) == ["2026-09-30", "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06"], "\(missing([:], window: 7))")
+    // clamping: below 7 acts as 7, above 365 acts as 365
+    for w in [6, 3, 1, 0, -5, Int.min] { expect(missing([:], window: w) == missing([:], window: 7), "window \(w) acts as 7") }
+    let l365 = missing([:], now: thu8, logStart: "2025-01-01", window: 365)
+    expect(l365.first == "2025-10-08" && !l365.contains("2025-10-07") && l365.last == "2026-10-07", "\(l365.first ?? "nil")")
+    for w in [366, 1000, 100_000, Int.max] { expect(missing([:], now: thu8, logStart: "2025-01-01", window: w) == l365, "window \(w) acts as 365") }
+    expect(missing([:], now: thu8, logStart: "2025-01-01", window: 364).first == "2025-10-09")
+}
+test("catch up: the log start cuts the list; no start and no pages means nothing to catch up") {
+    expect(missing([:], logStart: "2026-10-02") == ["2026-10-02", "2026-10-05", "2026-10-06"], "start day itself is listed")
+    expect(missing(["2026-09-30": .partial], logStart: "2026-10-02") == ["2026-10-02", "2026-10-05", "2026-10-06"], "a partial page before the start is not listed")
+    expect(missing([:], logStart: "2026-10-20").isEmpty && missing([:], logStart: "2026-10-07").isEmpty, "a start today or later: nothing before it")
+    // nil start = the earliest page
+    expect(missing(["2026-09-30": .logged], logStart: nil) == ["2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06"])
+    expect(missing(["2026-09-30": .skipped], logStart: nil) == ["2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06"], "a skip marker also starts the log")
+    expect(missing([:], logStart: nil).isEmpty, "a new user has nothing to catch up on: days before the first page do not count")
+    expect(missing([:], logStart: nil, window: 365).isEmpty)
+    // M1-A9: log starts 1 Oct, 12 Sep is backfilled: 13-30 Sep are not listed
+    let m = missing(["2026-09-12": .logged, "2026-10-05": .logged], logStart: "2026-10-01")
+    expect(m == ["2026-10-01", "2026-10-02", "2026-10-06"], "\(m)")
+    // the same backfill with no pinned start: the earliest page is the start and the wall of missed days appears (why the app pins it)
+    let wall = missing(["2026-09-12": .logged, "2026-10-05": .logged], logStart: nil)
+    expect(wall.first == "2026-09-14" && wall.count == 16, "\(wall.count) days without a pinned start")
+    // an explicit start wins over an earlier page; an earlier explicit start wins over later pages
+    expect(missing(["2026-10-06": .logged], logStart: "2026-10-05") == ["2026-10-05"])
+}
+test("catch up: a window across DST has no duplicate or missing day (every day scheduled)") {
+    let every = Set(1...7)
+    for now in [mk(2026, 11, 4, 12), mk(2026, 3, 10, 12), mk(2026, 11, 2, 0, 30), mk(2026, 3, 9, 23, 59)] {
+        for w in [7, 30, 365] {
+            let l = missing([:], now: now, weekdays: every, logStart: "2000-01-01", window: w)
+            let today = DayKey.string(now, cal)
+            expect(l.count == w && Set(l).count == w, "\(today) window \(w): \(l.count) unique days")
+            expect(l.last == DayKey.adding(today, -1, cal) && l.first == DayKey.adding(today, -w, cal), "\(today) window \(w) edges")
+            var consecutive = true
+            for i in stride(from: 1, to: l.count, by: 1) where DayKey.adding(l[i - 1], 1, cal) != l[i] { consecutive = false }
+            expect(consecutive, "\(today) window \(w) consecutive")
+        }
+    }
+}
+test("catch up: a full year window is fast") {
+    let t0 = Date()
+    var total = 0
+    for _ in 0..<5 { total += missing([:], now: thu8, logStart: "2000-01-01", window: 365).count }
+    let per = Date().timeIntervalSince(t0) / 5
+    expect(total == 5 * 261 || total > 0, "")
+    expect(per < 0.05, "365-day window took \(Int(per * 1000)) ms")
+}
+test("catch up: next(after:in:) is the first entry strictly after the day") {
+    let l = ["2026-09-28", "2026-09-29", "2026-10-02", "2026-10-05"]
+    expect(CatchUp.next(after: nil, in: l) == "2026-09-28", "nil -> first")
+    expect(CatchUp.next(after: "2026-09-28", in: l) == "2026-09-29" && CatchUp.next(after: "2026-09-29", in: l) == "2026-10-02")
+    expect(CatchUp.next(after: "2026-09-30", in: l) == "2026-10-02", "a day that is not in the list")
+    expect(CatchUp.next(after: "2026-10-05", in: l) == nil && CatchUp.next(after: "2026-12-01", in: l) == nil, "none after the last")
+    expect(CatchUp.next(after: "2000-01-01", in: l) == "2026-09-28")
+    expect(CatchUp.next(after: nil, in: []) == nil && CatchUp.next(after: "2026-10-01", in: []) == nil, "empty list")
+    expect(CatchUp.next(after: nil, in: ["2026-10-02"]) == "2026-10-02" && CatchUp.next(after: "2026-10-01", in: ["2026-10-02"]) == "2026-10-02")
+    expect(CatchUp.next(after: "2026-10-02", in: ["2026-10-02"]) == nil && CatchUp.next(after: "2026-10-03", in: ["2026-10-02"]) == nil, "strictly after")
+}
+test("skipDays: one marker per day, returns only the days it changed, leaves writing alone") {
+    let store = freshStore("skipdays"); let dir = store.dir
+    try store.save(day: "2026-10-05", body: lorem(30))                       // a written day in the middle of the selection
+    try store.save(day: "2026-10-02", body: "## What I did\n\n## Finished")  // headings only: no writing
+    try store.save(day: "2026-10-01", body: "![](assets/x.png)")             // an image alone is content
+    let before = try folderSnapshot(dir)
+    let r = try store.skipDays(["2026-09-29", "2026-09-30", "2026-10-05", "2026-10-02", "2026-10-01"], reason: "Leave")
+    expect(r == ["2026-09-29", "2026-09-30", "2026-10-02"], "\(r)")
+    for d in r { let doc = try store.load(d); expect(doc?.isSkipped == true && doc?.skipReason == "Leave", d) }
+    try expect(try fileText(dir, "2026-09-29") == "# 2026-09-29\n\n> Skipped: Leave\n", "the marker format of skip(_:reason:)")
+    let after = try folderSnapshot(dir)
+    expect(after["2026-10-05.md"] == before["2026-10-05.md"] && after["2026-10-01.md"] == before["2026-10-01.md"], "pages with writing are byte-identical")
+    expect(Set(after.keys) == Set(before.keys).union(["2026-09-29.md", "2026-09-30.md"]), "only markers were added: \(after.keys.sorted())")
+    // empty list, empty reason, duplicates and order
+    try expect(try store.skipDays([], reason: "Leave").isEmpty)
+    let r2 = try store.skipDays(["2026-10-08", "2026-10-07", "2026-10-08"], reason: "")
+    expect(r2 == ["2026-10-08", "2026-10-07"], "input order, duplicates once: \(r2)")
+    try expect(try fileText(dir, "2026-10-07") == "# 2026-10-07\n\n> Skipped\n", "no reason = plain marker")
+    let r3 = try store.skipDays(["2026-10-09"], reason: "Sick\nday  ")
+    try expect(r3 == ["2026-10-09"] && (try store.load("2026-10-09")!.skipReason) == "Sick day", "the reason stays on one line")
+    // an already skipped day is not ours to rewrite or to undo: left alone, not returned (any reason)
+    let r4 = try store.skipDays(["2026-09-29", "2026-10-07"], reason: "Holiday")
+    expect(r4.isEmpty, "\(r4)")
+    try expect(try store.load("2026-09-29")!.skipReason == "Leave" && (try store.load("2026-10-07")!.skipReason) == "", "reasons are kept")
+    // the Catch up list and the file states agree afterwards
+    let st = try store.fileStates(minWords: 20)
+    expect(st["2026-09-29"] == .skipped && st["2026-10-05"] == .logged && st["2026-10-02"] == .skipped)
+    // typed errors, and nothing is written when one entry is malformed
+    let snap = try folderSnapshot(dir)
+    do { _ = try store.skipDays(["2026-11-02", "../evil", "2026-11-03"], reason: "x"); expect(false, "bad day must throw") }
+    catch { expect(error as? LogError == .badDay("../evil"), "\(error)") }
+    try expect(try folderSnapshot(dir) == snap, "a malformed entry writes nothing at all")
+    do { _ = try store.skipDays(["2026-11-04", "x"], reason: "x"); expect(false) } catch { expect(error as? LogError == .badDay("x")) }
+    let missingFolder = LogStore(dir: root.appendingPathComponent("nope-skip-\(UUID().uuidString)"))
+    do { _ = try missingFolder.skipDays(["2026-10-05"], reason: "x"); expect(false) } catch { expect(error as? LogError == .folderMissing(missingFolder.dir.path), "\(error)") }
+}
+test("skipDays: a failing write takes back what the call wrote (all or nothing)") {
+    let store = freshStore("skipfail"); let dir = store.dir
+    try store.save(day: "2026-10-05", body: lorem(30))
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir.path)
+    do { _ = try store.skipDays(["2026-10-01", "2026-10-02"], reason: "Leave"); expect(false, "unwritable folder must throw") }
+    catch { expect(error as? LogError == .folderNotWritable(dir.path), "\(error)") }
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+    try expect(try store.listDays() == ["2026-10-05"], "no markers were left behind")
+    // a failure in the MIDDLE of a batch (a directory squats on the day file name): the marker written before it is taken back
+    let mid = freshStore("skipfail2")
+    try FileManager.default.createDirectory(at: mid.dir.appendingPathComponent("2026-10-02.md"), withIntermediateDirectories: false)
+    do { _ = try mid.skipDays(["2026-10-01", "2026-10-02", "2026-10-05"], reason: "Leave"); expect(false, "must throw") }
+    catch { expect(error as? LogError != nil, "typed error, got \(error)") }
+    try expect(try FileManager.default.contentsOfDirectory(atPath: mid.dir.path) == ["2026-10-02.md"], "no marker left behind")
+}
+test("unskipDays: restores pure markers only; a skip then undo leaves the folder byte-identical") {
+    let store = freshStore("unskipdays"); let dir = store.dir
+    try store.save(day: "2026-10-05", body: lorem(30))
+    try FileManager.default.createDirectory(at: dir.appendingPathComponent("assets"), withIntermediateDirectories: true)
+    try pngBytes.write(to: dir.appendingPathComponent("assets/2026-10-05-1a2b3c4d.png"))
+    try store.save(day: "2026-10-06", body: lorem(5))                         // a partial day stays untouched by the batch
+    let before = try folderSnapshot(dir)
+    let skipped = try store.skipDays(["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-05", "2026-10-06"], reason: "Leave")
+    expect(skipped == ["2026-09-29", "2026-09-30", "2026-10-01"])
+    let restored = try store.unskipDays(skipped)
+    expect(restored == skipped, "\(restored)")
+    try expect(try folderSnapshot(dir) == before, "folder is byte-identical after skip then undo")
+    try expect(try store.unskipDays(skipped).isEmpty, "undo twice does nothing")
+    // undo after the user typed into one skipped day: that day is left alone
+    let again = try store.skipDays(["2026-09-29", "2026-09-30", "2026-10-01"], reason: "Leave")
+    try store.save(day: "2026-09-30", body: "I worked after all today, wrote this by hand.")
+    let r = try store.unskipDays(again)
+    expect(r == ["2026-09-29", "2026-10-01"], "\(r)")
+    try expect(try store.load("2026-09-30")!.body == "I worked after all today, wrote this by hand." && !(try store.load("2026-09-30")!.isSkipped))
+    try expect(try store.load("2026-09-29") == nil && (try store.load("2026-10-01")) == nil)
+    // a marker someone added notes to is no longer a pure marker: left alone
+    try raw("# 2026-10-02\n\n> Skipped: Leave\n\nand some notes I added\n", in: dir, day: "2026-10-02")
+    try raw("# 2026-10-07\n\n> Skipped\n", in: dir, day: "2026-10-07")
+    try expect(try store.unskipDays(["2026-10-02", "2026-10-07", "2026-10-05", "2026-10-06", "2026-10-30"]) == ["2026-10-07"], "logs, partial pages, notes and missing files are not touched")
+    try expect(try fileText(dir, "2026-10-02").contains("and some notes I added"))
+    try expect(try store.load("2026-10-05")?.words == 30 && (try store.load("2026-10-06"))?.words == 5)
+    // empty list, duplicates, bad day
+    try expect(try store.unskipDays([]).isEmpty)
+    let two = try store.skipDays(["2026-10-12", "2026-10-13"], reason: "Sick")
+    try expect(try store.unskipDays(["2026-10-13", "2026-10-12", "2026-10-13"]) == ["2026-10-13", "2026-10-12"] && two.count == 2, "input order, duplicates once")
+    _ = try store.skipDays(["2026-10-14"], reason: "x")
+    do { _ = try store.unskipDays(["2026-10-14", "nope"]); expect(false) } catch { expect(error as? LogError == .badDay("nope")) }
+    try expect(try store.load("2026-10-14")?.isSkipped == true, "a malformed entry stops the call before anything is deleted")
+    // a headings-only page that was skipped has no file after undo (it carried no writing; the template shows it again): documented, not byte-identical
+    try store.save(day: "2026-10-19", body: "## What I did\n\n## Finished")
+    try expect(try store.skipDays(["2026-10-19"], reason: "Leave") == ["2026-10-19"] && (try store.unskipDays(["2026-10-19"])) == ["2026-10-19"])
+    try expect(try store.load("2026-10-19") == nil)
+}
+test("skip then undo: the streak never falls on skip and is restored exactly on undo; Catch up follows") {
+    let store = freshStore("skipstreak")
+    let now = mk(2026, 10, 8, 12)                                            // Thu 8 Oct, nothing written yet today
+    for d in ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-06", "2026-10-07"] { try store.save(day: d, body: lorem(25)) }
+    // missed: Thu 1 Oct, Fri 2 Oct, Mon 5 Oct
+    func state() throws -> (StreakResult, [String]) {
+        let st = try store.fileStates(minWords: 20)
+        return (Streak.compute(states: st, now: now, calendar: cal, weekdays: workdays, since: "2026-09-28"),
+                CatchUp.missing(states: st, now: now, calendar: cal, weekdays: workdays, logStart: "2026-09-28", windowDays: 30))
+    }
+    let (s0, l0) = try state()
+    expect(l0 == ["2026-10-01", "2026-10-02", "2026-10-05"] && s0 == StreakResult(current: 2, best: 3), "before: \(s0) \(l0)")
+    let skipped = try store.skipDays(l0, reason: "Leave")
+    let (s1, l1) = try state()
+    expect(skipped == l0 && l1.isEmpty, "the days leave the list")
+    expect(s1.current >= s0.current && s1.best >= s0.best, "skipping never lowers the streak: \(s0) -> \(s1)")
+    expect(s1 == StreakResult(current: 5, best: 5), "skipped days are neutral, so the two runs join: \(s1)")
+    _ = try store.unskipDays(skipped)
+    let (s2, l2) = try state()
+    expect(s2 == s0 && l2 == l0, "undo brings the streak and the list back exactly: \(s2)")
+}
+test("catch up end to end through real files: write the minimum in each day, the list shrinks, next walks on, ends empty") {
+    let store = freshStore("catchup-e2e")
+    for d in ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-06", "2026-10-07"] { try store.save(day: d, body: lorem(25)) }
+    let now = mk(2026, 10, 8, 12)
+    func list() throws -> [String] {
+        CatchUp.missing(states: try store.fileStates(minWords: 20), now: now, calendar: cal, weekdays: workdays, logStart: nil, windowDays: 30)
+    }
+    var l = try list()
+    expect(l == ["2026-10-01", "2026-10-02", "2026-10-05"], "exactly the 3 unwritten workdays: \(l)")
+    var cur = CatchUp.next(after: nil, in: l)
+    expect(cur == "2026-10-01")
+    try store.save(day: "2026-10-01", body: lorem(19))
+    l = try list()
+    expect(l == ["2026-10-01", "2026-10-02", "2026-10-05"], "19 of 20 words stays on the list (partial)")
+    try store.save(day: "2026-10-01", body: lorem(20))
+    l = try list()
+    expect(l == ["2026-10-02", "2026-10-05"], "20 words closes the day: \(l)")
+    cur = CatchUp.next(after: cur, in: l)
+    expect(cur == "2026-10-02")
+    try store.save(day: "2026-10-02", body: lorem(20))
+    cur = CatchUp.next(after: cur, in: try list())
+    expect(cur == "2026-10-05")
+    try store.save(day: "2026-10-05", body: lorem(20))
+    try expect(try list().isEmpty && CatchUp.next(after: cur, in: try list()) == nil, "All caught up")
+    // a template-only page is not writing: still listed, and a skip marker replaces it
+    try store.save(day: "2026-10-05", body: Settings.defaultTemplate)
+    try expect(try list() == ["2026-10-05"], "an emptied day returns to the list")
+}
+test("skipDays: 30 days are fast") {
+    let store = freshStore("skipperf")
+    let days = (0..<30).map { DayKey.adding("2026-09-01", $0, cal)! }
+    let t0 = Date()
+    let r = try store.skipDays(days, reason: "Leave")
+    let skipT = Date().timeIntervalSince(t0)
+    expect(r == days && skipT < 0.25, "skipDays(30) took \(Int(skipT * 1000)) ms")
+    let t1 = Date()
+    let u = try store.unskipDays(days)
+    let unT = Date().timeIntervalSince(t1)
+    expect(u == days && unT < 0.25, "unskipDays(30) took \(Int(unT * 1000)) ms")
+    print("  note: skipDays(30) \(Int(skipT * 1000)) ms, unskipDays(30) \(Int(unT * 1000)) ms")
+}
+
+// MARK: C5 week review completeness
+func weekSummary(_ date: Date, states st: [String: DayStatus] = [:], docs: [String: DayDocument] = [:], now: Date, cal c: Calendar = cal,
+                 logStart: String? = nil, weekdays wd: Set<Int> = workdays) -> WeekSummary {
+    var s = Settings(); s.logStartDate = logStart; s.weekdays = wd
+    return WeeklyReview.summary(weekContaining: date, documents: docs, states: st, settings: s, calendar: c, now: now)
+}
+test("week review: a week with no files lists every scheduled day, all .missed, and offers them as missingDays") {
+    let history: [String: DayStatus] = ["2026-09-28": .logged, "2026-09-29": .logged]          // pages exist, but none in the week under review
+    let w = weekSummary(mk(2026, 10, 7), states: history, now: mk(2026, 10, 14, 12))
+    expect(w.weekStart == "2026-10-05" && w.weekEnd == "2026-10-11" && w.days.count == 7, "\(w.weekStart) \(w.weekEnd) \(w.days.count)")
+    let scheduled = w.days.filter { workdays.contains(DayKey.weekday($0.day, cal)) }
+    expect(scheduled.map { $0.day } == ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"], "5 entries Mon-Fri")
+    expect(scheduled.allSatisfy { $0.status == .missed && $0.doc == nil }, "all .missed, no page")
+    expect(w.days.filter { !workdays.contains(DayKey.weekday($0.day, cal)) }.allSatisfy { $0.status == .off }, "weekend .off")
+    expect(w.missingDays == ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"], "\(w.missingDays)")
+    expect(w.loggedCount == 0 && w.workdayCount == 5 && w.skippedCount == 0 && w.sections.isEmpty)
+    // with no page anywhere and no log start nothing is "missing" (a new user), although the statuses keep Status.resolve's rule
+    let fresh = weekSummary(mk(2026, 10, 7), now: mk(2026, 10, 14, 12))
+    expect(fresh.missingDays.isEmpty && fresh.days.count == 7, "no history, no start: nothing to catch up")
+    // a week before the first page: nothing is missed, nothing is missing
+    let early = weekSummary(mk(2026, 9, 9), states: history, now: mk(2026, 10, 14, 12))
+    expect(early.days.count == 7 && early.days.allSatisfy { $0.status == .off } && early.missingDays.isEmpty, "\(early.days.map { $0.status })")
+    // the log start date from Settings mutes the days before it (it used to be ignored here)
+    let cut = weekSummary(mk(2026, 10, 7), states: history, now: mk(2026, 10, 14, 12), logStart: "2026-10-07")
+    expect(cut.days.map { $0.status } == [.off, .off, .missed, .missed, .missed, .off, .off], "\(cut.days.map { $0.status })")
+    expect(cut.missingDays == ["2026-10-07", "2026-10-08", "2026-10-09"], "\(cut.missingDays)")
+    // a written page and a skip marker are not missing; a started page is
+    let mixed = weekSummary(mk(2026, 10, 7), states: history.merging(["2026-10-05": .logged, "2026-10-06": .skipped, "2026-10-07": .partial], uniquingKeysWith: { a, _ in a }),
+                            now: mk(2026, 10, 14, 12))
+    expect(mixed.missingDays == ["2026-10-07", "2026-10-08", "2026-10-09"] && mixed.loggedCount == 1 && mixed.skippedCount == 1, "\(mixed.missingDays)")
+}
+test("week review: weeks start on calendar.firstWeekday") {
+    let sun = calIn(firstWeekday: 1)
+    let w = weekSummary(mk(2026, 10, 7), states: ["2026-09-28": .logged], now: mk(2026, 10, 14, 12), cal: sun)
+    expect(w.weekStart == "2026-10-04" && w.weekEnd == "2026-10-10" && w.days.count == 7, "Sunday-first: \(w.weekStart)...\(w.weekEnd)")
+    expect(w.days.map { $0.status } == [.off, .missed, .missed, .missed, .missed, .missed, .off], "\(w.days.map { $0.status })")
+    expect(w.missingDays == ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"] && w.workdayCount == 5)
+    // a Sunday belongs to the week before it on Monday-first calendars and starts its own week on Sunday-first ones
+    let monday = weekSummary(mk(2026, 10, 11), now: mk(2026, 10, 14, 12))
+    let sunday = weekSummary(mk(2026, 10, 11), now: mk(2026, 10, 14, 12), cal: sun)
+    expect(monday.weekStart == "2026-10-05" && monday.weekEnd == "2026-10-11", "\(monday.weekStart)")
+    expect(sunday.weekStart == "2026-10-11" && sunday.weekEnd == "2026-10-17", "\(sunday.weekStart)")
+    // Saturday-first, to show it is the calendar and not a Monday/Sunday special case
+    let sat = weekSummary(mk(2026, 10, 7), now: mk(2026, 10, 14, 12), cal: calIn(firstWeekday: 7))
+    expect(sat.weekStart == "2026-10-03" && sat.weekEnd == "2026-10-09", "\(sat.weekStart)")
+}
+test("week review: the current week lists future days as .future; missingDays never holds today or the future") {
+    let st: [String: DayStatus] = ["2026-09-30": .logged, "2026-10-05": .logged]
+    let w = weekSummary(mk(2026, 10, 7), states: st, now: wed7)                    // Wed 7 Oct is today, nothing written yet
+    expect(w.days.map { $0.status } == [.logged, .missed, .missed, .future, .future, .future, .future], "\(w.days.map { $0.status })")
+    expect(w.days.count == 7, "every day of the week is present")
+    expect(w.missingDays == ["2026-10-06"], "Tuesday only: \(w.missingDays)")
+    expect(w.workdayCount == 3 && w.loggedCount == 1, "scheduled days not in the future: \(w.workdayCount)")
+    // once today has a page it is logged, still not missing; a started page today is not listed either
+    let w2 = weekSummary(mk(2026, 10, 7), states: st.merging(["2026-10-07": .partial], uniquingKeysWith: { a, _ in a }), now: wed7)
+    expect(w2.missingDays == ["2026-10-06"] && w2.days[2].status == .partial)
+    // next week: all future
+    let next = weekSummary(mk(2026, 10, 14), states: st, now: wed7)
+    expect(next.days.count == 7 && next.days.allSatisfy { $0.status == .future } && next.missingDays.isEmpty && next.workdayCount == 0)
+    // Monday morning: the week is only today
+    let mon = weekSummary(mk(2026, 10, 5), states: ["2026-09-30": .logged], now: mk(2026, 10, 5, 9))
+    expect(mon.days.map { $0.status } == [.missed, .future, .future, .future, .future, .future, .future] && mon.missingDays.isEmpty)
+}
+test("week review: missingDays is CatchUp.missing restricted to the week") {
+    let now = mk(2026, 10, 21, 12)                                                  // Wed 21 Oct
+    let st: [String: DayStatus] = ["2026-09-21": .logged, "2026-09-22": .partial, "2026-09-23": .skipped, "2026-09-30": .logged, "2026-10-01": .partial,
+                                   "2026-10-02": .skipped, "2026-10-06": .logged, "2026-10-07": .logged, "2026-10-12": .partial, "2026-10-17": .partial,
+                                   "2026-10-20": .skipped]
+    for logStart in [nil, "2026-09-21", "2026-09-30", "2026-10-07", "2026-10-15"] as [String?] {
+        let all = CatchUp.missing(states: st, now: now, calendar: cal, weekdays: workdays, logStart: logStart, windowDays: 365)
+        for weekOffset in -5...0 {
+            let date = WeeklyReview.shift(now, weeks: weekOffset, calendar: cal)
+            let w = weekSummary(date, states: st, now: now, logStart: logStart)
+            let days = Set(w.days.map { $0.day })
+            expect(w.missingDays == all.filter { days.contains($0) }, "logStart \(logStart ?? "nil") week \(w.weekStart): \(w.missingDays) vs \(all.filter { days.contains($0) })")
+        }
+    }
+}
+
+// MARK: C6 folderStamp
+test("folderStamp: stable over (name, mtime, size) of the day files; add, edit, delete, rename and touch change it") {
+    let store = freshStore("stamp"); let dir = store.dir; let fm = FileManager.default
+    func setMTime(_ day: String, _ d: Date) throws { try fm.setAttributes([.modificationDate: d], ofItemAtPath: store.url(for: day).path) }
+    let old = Date(timeIntervalSince1970: 1_700_000_000)
+    try store.save(day: "2026-10-05", body: lorem(30)); try store.save(day: "2026-10-06", body: lorem(5)); try store.skip("2026-10-07", reason: "x")
+    for d in ["2026-10-05", "2026-10-06", "2026-10-07"] { try setMTime(d, old) }       // pin mtimes so "edit" can only be seen through the stamp
+    let a = try store.folderStamp()
+    expect(!a.isEmpty, "a folder with days has a stamp")
+    try expect(try store.folderStamp() == a && (try store.folderStamp()) == a, "unchanged folder -> identical stamp")
+    try expect(try LogStore(dir: dir).folderStamp() == a, "another store over the same folder agrees")
+    try expect(try store.listDays().count == 3 && (try store.load("2026-10-05")) != nil && (try store.fileStates(minWords: 20)).count == 3, "reading changes nothing")
+    try expect(try store.folderStamp() == a, "reading (listDays, load, fileStates) does not change the stamp")
+    try store.save(day: "2026-10-05", body: lorem(30))
+    try expect(try store.folderStamp() == a, "saving identical content rewrites nothing")
+    // add
+    try store.save(day: "2026-10-08", body: "a new page with words")
+    let added = try store.folderStamp()
+    expect(added != a, "add")
+    // delete (an emptied page removes the file): back to exactly the first stamp
+    try store.save(day: "2026-10-08", body: "")
+    try expect(try store.folderStamp() == a, "delete returns to the earlier stamp")
+    // edit with the same size and a new mtime
+    try store.save(day: "2026-10-05", body: lorem(30, "x"))
+    let edited = try store.folderStamp()
+    expect(edited != a, "edit (same size, new mtime)")
+    // edit that changes the size but keeps the mtime
+    try setMTime("2026-10-05", old)
+    let sameMTime = try store.folderStamp()
+    expect(sameMTime == a, "same name, size and mtime, different bytes: the same stamp (contents are not read)")
+    try store.save(day: "2026-10-05", body: lorem(31)); try setMTime("2026-10-05", old)
+    try expect(try store.folderStamp() != a, "edit that changes only the size")
+    try store.save(day: "2026-10-05", body: lorem(30)); try setMTime("2026-10-05", old)
+    try expect(try store.folderStamp() == a, "same name, size and mtime: same stamp again")
+    // touch: only the mtime changes
+    try setMTime("2026-10-06", old.addingTimeInterval(60))
+    let touched = try store.folderStamp()
+    expect(touched != a, "touch")
+    try setMTime("2026-10-06", old)
+    try expect(try store.folderStamp() == a, "touch undone")
+    try setMTime("2026-10-06", old.addingTimeInterval(0.5))
+    try expect(try store.folderStamp() != a, "a sub-second mtime change is seen")
+    try setMTime("2026-10-06", old)
+    // rename: same size and mtime, different name
+    try fm.moveItem(at: store.url(for: "2026-10-06"), to: store.url(for: "2026-10-09"))
+    try expect(try store.folderStamp() != a, "rename")
+    try fm.moveItem(at: store.url(for: "2026-10-09"), to: store.url(for: "2026-10-06"))
+    try expect(try store.folderStamp() == a, "renamed back")
+    // skip and unskip are file changes too
+    try store.skip("2026-10-12", reason: "Leave")
+    try expect(try store.folderStamp() != a, "a skip marker is a file")
+    try store.unskip("2026-10-12")
+    try expect(try store.folderStamp() == a)
+    _ = dir
+}
+test("folderStamp: assets, non-markdown, hidden files, folders and backups are ignored") {
+    let store = freshStore("stampignore"); let dir = store.dir; let fm = FileManager.default
+    try store.save(day: "2026-10-05", body: lorem(30))
+    let a = try store.folderStamp()
+    try fm.createDirectory(at: dir.appendingPathComponent("assets"), withIntermediateDirectories: true)
+    try pngBytes.write(to: dir.appendingPathComponent("assets/2026-10-05-1a2b3c4d.png"))
+    try fm.createDirectory(at: dir.appendingPathComponent("backups/2026-10-05"), withIntermediateDirectories: true)
+    try "old".write(to: dir.appendingPathComponent("backups/2026-10-05/20261005-120000.md"), atomically: true, encoding: .utf8)
+    for n in ["notes.md", "2026-10-0x.md", "2026-10-5.md", "readme.txt", "2026-10-05.md.bak", ".hidden", ".2026-10-06.md.tmp", "2026-10-05.txt"] {      // not ".MD": on a case-insensitive volume that IS the day file
+        try "hi".write(to: dir.appendingPathComponent(n), atomically: true, encoding: .utf8)
+    }
+    try fm.createDirectory(at: dir.appendingPathComponent("2026-10-11.md"), withIntermediateDirectories: true)     // a folder that looks like a day file
+    try expect(try store.folderStamp() == a, "none of those is a day file")
+    try pngBytes.write(to: dir.appendingPathComponent("assets/another.png"))
+    try "changed".write(to: dir.appendingPathComponent("notes.md"), atomically: true, encoding: .utf8)
+    try expect(try store.folderStamp() == a, "editing them changes nothing")
+    // a symlink to a day file counts, through its target
+    let target = freshDir("stamp-target").appendingPathComponent("page.md")
+    try "# 2026-10-13\n\nlinked page".write(to: target, atomically: true, encoding: .utf8)
+    try fm.createSymbolicLink(at: dir.appendingPathComponent("2026-10-13.md"), withDestinationURL: target)
+    let linked = try store.folderStamp()
+    expect(linked != a, "a linked day file is a day file")
+    try fm.removeItem(at: target)
+    _ = try store.folderStamp()      // a dangling link must not throw
+    try fm.removeItem(at: dir.appendingPathComponent("2026-10-13.md"))
+    try expect(try store.folderStamp() == a)
+    // a missing folder throws the same typed error as the other reads
+    let missingFolder = LogStore(dir: root.appendingPathComponent("nope-stamp-\(UUID().uuidString)"))
+    do { _ = try missingFolder.folderStamp(); expect(false) } catch { expect(error as? LogError == .folderMissing(missingFolder.dir.path), "\(error)") }
+    try expect(try freshStore("stampempty").folderStamp() == (try freshStore("stampempty2").folderStamp()), "empty folders agree")
+}
+test("folderStamp: never reads file contents (an unreadable page is still stamped)") {
+    let store = freshStore("stampread"); let fm = FileManager.default
+    try store.save(day: "2026-10-05", body: lorem(30)); try store.save(day: "2026-10-06", body: lorem(30))
+    let a = try store.folderStamp()
+    try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: store.url(for: "2026-10-05").path)
+    defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: store.url(for: "2026-10-05").path) }
+    let b = try store.folderStamp()
+    expect(b.contains("2026-10-05.md") && b.contains("2026-10-06.md"), "both files are in the stamp: \(b)")
+    _ = a
+}
+test("folderStamp: 3,650 day files are stamped in well under 50 ms") {
+    let store = freshStore("stampbig"); let fm = FileManager.default
+    var d = utcDate(2016, 10, 8)
+    for _ in 0..<3650 {
+        fm.createFile(atPath: store.dir.appendingPathComponent(utcKey(d) + ".md").path, contents: Data("# \(utcKey(d))\n\nsome words for this day\n".utf8))
+        d = utcCal.date(byAdding: .day, value: 1, to: d)!
+    }
+    let first = try store.folderStamp()
+    var best = Double.infinity, total = 0.0
+    for _ in 0..<5 {
+        let t0 = Date()
+        let s = try store.folderStamp()
+        let dt = Date().timeIntervalSince(t0)
+        best = min(best, dt); total += dt
+        expect(s == first, "stable across calls")
+    }
+    expect(best < 0.05 && total / 5 < 0.05, "3,650 files: best \(Int(best * 1000)) ms, mean \(Int(total / 5 * 1000)) ms")
+    expect(first.split(separator: "\n").count == 3650, "one entry per file")
+    print("  note: folderStamp over 3,650 files: best \(Int(best * 1000)) ms, mean \(Int(total / 5 * 1000)) ms")
+}
+
+// MARK: C6 regressions for what tests/run-kill-tests.sh found
+/// A pid that is certainly not running: a child that already exited and was reaped.
+func deadPid() throws -> Int32 {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/true"); try p.run(); p.waitUntilExit(); return p.processIdentifier
+}
+test("kill regression: a killed write leaves only a hidden temp file; the next store's first save removes it from the log folder and the backups") {
+    fakeNow = mk(2026, 10, 6, 12, 0)
+    let (s0, bdir) = backupStore("kill-reg"); let dir = s0.dir; let fm = FileManager.default
+    try s0.save(day: "2026-10-05", body: lorem(30))
+    let pid = try deadPid()
+    let strayA = dir.appendingPathComponent(".gloamlog-tmp-\(pid)-AAAA"), strayB = bdir.appendingPathComponent(".gloamlog-tmp-\(pid)-BBBB")
+    let strayC = dir.appendingPathComponent(".gloamlog-tmp-garbage")                                  // our prefix, no readable pid: stale
+    let live = dir.appendingPathComponent(".gloamlog-tmp-\(getpid())-LIVE")                           // this process is alive: not a leftover
+    let foreign = ["notes.md", ".hidden", ".2026-10-05.md.tmp", "2026-10-05.md.sb-9d433aed-Oy56Tb"]   // never ours: never touched
+    for u in [strayA, strayB, strayC, live] { try "half a page".write(to: u, atomically: false, encoding: .utf8) }
+    for n in foreign { try "keep".write(to: dir.appendingPathComponent(n), atomically: false, encoding: .utf8) }
+    // invisible meanwhile: not a day, not an unrecognised file, not part of the folder stamp
+    try expect(try s0.listDays() == ["2026-10-05"] && (try s0.folderSummary()) == FolderSummary(logs: 1, skipped: 0, unrecognized: 2), "\(try s0.folderSummary())")
+    try expect(!(try s0.folderStamp()).contains("gloamlog"))
+    // a fresh store (= the next launch): nothing is swept before it writes, everything of ours that is stale goes with its first save
+    let s1 = LogStore(dir: dir, backupDir: bdir, clock: { fakeNow })
+    _ = try s1.load("2026-10-05"); _ = try s1.listDays()
+    expect(fm.fileExists(atPath: strayA.path) && fm.fileExists(atPath: strayB.path), "reading sweeps nothing")
+    fakeNow = fakeNow.addingTimeInterval(30)
+    try s1.save(day: "2026-10-05", body: lorem(31))
+    expect(!fm.fileExists(atPath: strayA.path), "stale temp in the log folder is removed")
+    expect(!fm.fileExists(atPath: strayB.path), "stale temp in the backups folder is removed")
+    expect(!fm.fileExists(atPath: strayC.path), "a temp with an unreadable pid is stale")
+    expect(fm.fileExists(atPath: live.path), "a temp whose writer is alive is left alone")
+    for n in foreign { expect(fm.fileExists(atPath: dir.appendingPathComponent(n).path), "\(n) is not ours and stays") }
+    try expect(Set(try fm.contentsOfDirectory(atPath: bdir.path)) == ["2026-10-05"], "backups folder holds only day folders: \(try fm.contentsOfDirectory(atPath: bdir.path))")
+    try expect(s1.listBackups(day: "2026-10-05").count == 1)
+    try fm.removeItem(at: live)
+    // every later save by the same store is a plain save: nothing else is deleted, nothing is left behind
+    try "later".write(to: dir.appendingPathComponent(".gloamlog-tmp-\(pid)-LATER"), atomically: false, encoding: .utf8)
+    try s1.save(day: "2026-10-05", body: lorem(32))
+    expect(fm.fileExists(atPath: dir.appendingPathComponent(".gloamlog-tmp-\(pid)-LATER").path), "one sweep per store, at its first write")
+    try fm.removeItem(at: dir.appendingPathComponent(".gloamlog-tmp-\(pid)-LATER"))
+    for n in foreign { try fm.removeItem(at: dir.appendingPathComponent(n)) }
+    try expect(Set(try fm.contentsOfDirectory(atPath: dir.path)) == ["2026-10-05.md"], "a save leaves no temp file")
+}
+test("kill regression: skip also sweeps; a failed save leaves no temp file behind") {
+    fakeNow = mk(2026, 10, 6, 12, 0)
+    let (s0, bdir) = backupStore("kill-reg2"); let dir = s0.dir; let fm = FileManager.default
+    let pid = try deadPid()
+    let stray = dir.appendingPathComponent(".gloamlog-tmp-\(pid)-SKIP")
+    try "x".write(to: stray, atomically: false, encoding: .utf8)
+    try LogStore(dir: dir, backupDir: bdir).skip("2026-10-07", reason: "Leave")
+    expect(!fm.fileExists(atPath: stray.path), "skip is a write: the first one sweeps")
+    // a directory squats on a day file name: the save fails with a typed error and leaves nothing behind
+    try fm.createDirectory(at: dir.appendingPathComponent("2026-10-08.md"), withIntermediateDirectories: false)
+    do { try s0.save(day: "2026-10-08", body: "some words here"); expect(false, "must throw") } catch { expect(isIO(error), "\(error)") }
+    try expect(!(try fm.contentsOfDirectory(atPath: dir.path)).contains { $0.hasPrefix(".gloamlog-tmp-") }, "no temp file after a failed write")
+    try expect(!(try fm.contentsOfDirectory(atPath: bdir.path)).contains { $0.hasPrefix(".gloamlog-tmp-") })
+}
+test("kill regression: saving keeps the day file's permissions, as Foundation's atomic write did") {
+    let store = freshStore("perm"); let fm = FileManager.default
+    func mode(_ d: String) -> Int { ((try? fm.attributesOfItem(atPath: store.url(for: d).path))?[.posixPermissions] as? Int) ?? -1 }
+    try store.save(day: "2026-10-05", body: lorem(30))
+    try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.url(for: "2026-10-05").path)
+    try store.save(day: "2026-10-05", body: lorem(31))
+    expect(mode("2026-10-05") == 0o600, "0600 stays 0600, got \(String(mode("2026-10-05"), radix: 8))")
+    try fm.setAttributes([.posixPermissions: 0o444], ofItemAtPath: store.url(for: "2026-10-05").path)
+    try store.save(day: "2026-10-05", body: lorem(32))
+    try expect(mode("2026-10-05") == 0o444 && (try store.load("2026-10-05"))?.words == 32, "a read-only page is still replaced (the folder is writable), mode kept")
+    try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: store.url(for: "2026-10-05").path)
+}
+
 try? FileManager.default.removeItem(at: root)
 print("\(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)

@@ -1,4 +1,5 @@
-// SkipSheet.swift - "Skip today?" with reason chips and an optional date range (scheduled days only).
+// SkipSheet.swift - "Skip today?" with reason chips and an optional date range (scheduled days only). In list mode (Catch up) it
+// skips exactly the days it is given with one reason: "Skip these 3 days?".
 import SwiftUI
 
 final class SkipForm: ObservableObject {
@@ -13,9 +14,12 @@ final class SkipForm: ObservableObject {
 struct SkipSheet: View {
     @ObservedObject var model: AppModel
     let day: String
+    var days: [String]? = nil                      // list mode: the days chosen in Catch up
     @StateObject private var form = SkipForm(start: Date())
     static let reasons = ["Holiday", "Leave", "Sick", "Day off", "Other…"]
 
+    private var listDays: [String] { days ?? [] }
+    private var many: Bool { days != nil }
     private var startDate: Date { DayKey.date(day, model.cal) ?? model.now }
     private var throughKey: String { DayKey.string(max(form.through, startDate), model.cal) }
     private var workdays: Int {
@@ -24,13 +28,28 @@ struct SkipSheet: View {
         return n
     }
     private var finalReason: String { form.reason == "Other…" ? String(form.other.dlTrimmed.prefix(40)) : form.reason }
-    private var isRange: Bool { form.range && throughKey > day }
+    private var isRange: Bool { !many && form.range && throughKey > day }
+
+    private var title: String {
+        if many { return listDays.count == 1 ? "Skip this day?" : "Skip these \(listDays.count) days?" }
+        return isRange ? "Skip these days?" : (day == model.today ? "Skip today?" : "Skip this day?")
+    }
+    private var which: String {
+        guard many, let f = listDays.first, let l = listDays.last else { return "" }
+        return listDays.count == 1 ? model.longDate(f) : "\(model.shortDate(f)) to \(model.shortDate(l))"
+    }
+    private var button: String {
+        if many { return listDays.count == 1 ? "Skip day" : "Skip \(listDays.count) days" }
+        return isRange ? "Skip \(Fmt.plural(workdays, "day"))" : "Skip day"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.s4) {
-            Text(isRange ? "Skip these days?" : (day == model.today ? "Skip today?" : "Skip this day?"))
-                .font(Theme.font(22, .semibold)).foregroundColor(Theme.textPrimary).accessibilityAddTraits(.isHeader)
-            Text("No reminder, no nag, and your streak stays as it is. You can undo this any time.")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(Theme.font(22, .semibold)).foregroundColor(Theme.textPrimary).accessibilityAddTraits(.isHeader)
+                if many { Text(which).font(Theme.font(13)).foregroundColor(Theme.textSecondary) }
+            }
+            Text("No reminders, and your streak stays as it is. You can undo this any time.")
                 .font(Theme.font(13)).foregroundColor(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: Theme.s2) {
@@ -49,16 +68,18 @@ struct SkipSheet: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: Theme.s2) {
-                Picker("", selection: $form.range) {
-                    Text("Today only").tag(false)
-                    Text("Through a later date").tag(true)
-                }.pickerStyle(.radioGroup).labelsHidden()
-                if form.range {
-                    HStack {
-                        DatePicker("Through", selection: $form.through, in: startDate..., displayedComponents: .date)
-                            .datePickerStyle(.field).fixedSize()
-                        Text(isRange ? "\(Fmt.plural(workdays, "workday"))" : "").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
+            if !many {
+                VStack(alignment: .leading, spacing: Theme.s2) {
+                    Picker("", selection: $form.range) {
+                        Text("Today only").tag(false)
+                        Text("Through a later date").tag(true)
+                    }.pickerStyle(.radioGroup).labelsHidden()
+                    if form.range {
+                        HStack {
+                            DatePicker("Through", selection: $form.through, in: startDate..., displayedComponents: .date)
+                                .datePickerStyle(.field).fixedSize()
+                            Text(isRange ? "\(Fmt.plural(workdays, "workday"))" : "").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
+                        }
                     }
                 }
             }
@@ -67,7 +88,7 @@ struct SkipSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { model.sheet = nil }.buttonStyle(SecondaryButtonStyle()).keyboardShortcut(.cancelAction)
-                Button(isRange ? "Skip \(Fmt.plural(workdays, "day"))" : "Skip day") { commit() }
+                Button(button) { commit() }
                     .buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
             }
         }
@@ -76,8 +97,16 @@ struct SkipSheet: View {
     }
 
     private func commit() {
+        if let list = days {
+            model.skipMany(list, reason: finalReason) { failure in
+                if let f = failure { form.error = f.text } else { model.sheet = nil }
+            }
+            return
+        }
         model.skip(day: day, through: isRange ? throughKey : nil, reason: finalReason) { failure in
-            if let f = failure { form.error = f.text } else { model.sheet = nil }
+            if let f = failure { form.error = f.text; return }
+            model.sheet = nil
+            model.advanceSession(after: day)              // a catch-up session goes on to the next day
         }
     }
 }

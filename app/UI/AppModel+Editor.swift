@@ -17,12 +17,17 @@ extension AppModel {
     var bridgeIfCreated: EditorBridge? { bridgeStorage }
 
     // MARK: opening a day
+    /// Opens any date from 2000-01-01 to today, whether or not it has a file. Opening writes nothing: DayEditor creates the
+    /// file only after the first real edit. `force` reloads the same day (after a skip, restore or template change).
     func openDay(_ k: String, focus: Bool = false, force: Bool = false) {
+        guard force || canOpen(k) else { return }
         if !force, let e = editor, e.day == k, selection == .day(k) { if focus { focusEditor() }; return }
         let old = editor
         let new = DayEditor(day: k, model: self)
         editor = new
         selection = .day(k)
+        shownMonth = YearMonth(day: k); stripDay = k                // the sidebar calendar follows the page
+        if let s = session, !s.days.contains(k) { session = nil }   // any other route ends a catch-up session
         rolloverDismissed = false
         carryUndoBody = nil
         refreshCarry()

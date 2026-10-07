@@ -6,8 +6,13 @@
 //   WeeklyReview.shift(_ date, weeks:, calendar:) -> Date          prev/next week (UI disables future)
 //   WeeklyReview.markdown(for:, grouping: .day | .section, calendar:) -> String
 //   WeekSummary: weekStart, weekEnd, days:[WeekDay{day,status,doc}], loggedCount, workdayCount (scheduled days not in the
-//                future), skippedCount, sections:[WeekSection{title,isOther,items:[WeekItem{day,text}]}],
+//                future), skippedCount, missingDays, sections:[WeekSection{title,isOther,items:[WeekItem{day,text}]}],
 //                section(titled:) -> WeekSection?
+//   days always holds all 7 days of the week (weeks with no file included); statuses come from Status.resolve with
+//   since = Status.effectiveSince(setting: settings.logStartDate, states:), so days before the log start are .off and the current
+//   week's later days are .future. missingDays = the week's scheduled days strictly before today, on or after the log start, that
+//   are .missed or .partial (oldest first): exactly CatchUp.missing restricted to the week (same rule, CatchUp.isMissing), and
+//   empty while there is no log start and no page at all. The week's days a UI should list are the scheduled ones plus any day with a page.
 // By section: for every heading of settings.template (template order) the text under matching headings across the week
 // (matched by normalised title; nested sub-headings stay inside, shown as bold labels), then "Other notes" = everything else
 // (text before the first heading, headings not in the template). Empty groups are left out.
@@ -36,6 +41,7 @@ struct WeekSummary: Equatable {
     var loggedCount: Int
     var workdayCount: Int
     var skippedCount: Int
+    var missingDays: [String] = []
 
     /// First group whose title matches under MarkdownBody.normalizeHeading ("finished" finds "✅ Finished"; "other notes" finds the rest).
     func section(titled t: String) -> WeekSection? {
@@ -56,16 +62,19 @@ enum WeeklyReview {
     static func summary(weekContaining date: Date, documents: [String: DayDocument], states: [String: DayStatus],
                         settings: Settings, calendar: Calendar, now: Date) -> WeekSummary {
         let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? date
-        let since = states.keys.min()
-        var days = [WeekDay](), logged = 0, work = 0, skipped = 0
-        for i in 0..<7 {
+        let today = DayKey.string(now, calendar)
+        let since = Status.effectiveSince(setting: settings.logStartDate, states: states)   // days before the log start are .off, never missed
+        var days = [WeekDay](), missing = [String](), logged = 0, work = 0, skipped = 0
+        for i in 0..<7 {                                             // all 7 days of the week, whatever the number of files (none is fine)
             guard let d = calendar.date(byAdding: .day, value: i, to: start) else { continue }
             let k = DayKey.string(d, calendar)
+            let weekday = calendar.component(.weekday, from: d)
             let st = Status.resolve(day: k, fileState: states[k], now: now, calendar: calendar, weekdays: settings.weekdays, since: since)
             days.append(WeekDay(day: k, status: st, doc: documents[k]))
             if st == .logged { logged += 1 }
             if st == .skipped { skipped += 1 }
-            if st != .future && settings.weekdays.contains(calendar.component(.weekday, from: d)) { work += 1 }
+            if st != .future && settings.weekdays.contains(weekday) { work += 1 }
+            if CatchUp.isMissing(day: k, weekday: weekday, status: st, today: today, since: since, weekdays: settings.weekdays) { missing.append(k) }
         }
 
         let template = MarkdownBody.headings(inTemplate: settings.template)
@@ -87,7 +96,7 @@ enum WeeklyReview {
         if !other.isEmpty { sections.append(WeekSection(title: otherTitle, isOther: true, items: other)) }
 
         return WeekSummary(weekStart: days.first?.day ?? "", weekEnd: days.last?.day ?? "", days: days, sections: sections,
-                           loggedCount: logged, workdayCount: work, skippedCount: skipped)
+                           loggedCount: logged, workdayCount: work, skippedCount: skipped, missingDays: missing)
     }
 
     static func markdown(for w: WeekSummary, grouping: WeekGrouping, calendar: Calendar) -> String {

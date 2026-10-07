@@ -15,7 +15,7 @@ extension AppModel {
             nc.addObserver(forName: n, object: nil, queue: .main) { [weak self] _ in self?.refreshClock() }
         }
         nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.reload(); self?.editor?.checkExternalChange(); self?.editor?.retryIfNeeded()
+            self?.reloadIfFolderChanged(); self?.editor?.checkExternalChange(); self?.editor?.retryIfNeeded()
             Notifier.shared.refreshState { s in self?.notifState = s }
         }
         nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.flushEditor() }
@@ -35,8 +35,10 @@ extension AppModel {
     var mainWindow: NSWindow? { NSApp.windows.first { $0.title == "Gloamlog" && !($0 is NSPanel) } }
     var windowVisible: Bool { if let w = mainWindow { return w.isVisible && !w.isMiniaturized }; return false }
 
+    /// Every 30 s: move the clock (and the day over at midnight), then re-read the pages only if the folder changed.
     func tick() {
         refreshClock()
+        reloadIfFolderChanged()
         editor?.checkExternalChange()
         editor?.retryIfNeeded()
         retryOrphans()

@@ -1,4 +1,4 @@
-// MenuBarView.swift - MenuBarExtra popover (.window style): state, streak, last 7 days, actions.
+// MenuBarView.swift - MenuBarExtra popover (.window style): state, next reminder, streak, last 7 days, actions, Settings.
 import SwiftUI
 
 extension AppModel {
@@ -20,6 +20,8 @@ extension AppModel {
         default: return isDue ? "Due now: \(reminderLabel)" : "Not logged yet"
         }
     }
+    /// The line under the state in the popover: when the next reminder is due, and how firm it is.
+    var menuReminderLine: String { "Next reminder: \(nextReminderLabel) · \(settings.mode == .strict ? "Strict" : "Gentle")" }
 }
 
 struct MenuBarView: View {
@@ -35,8 +37,8 @@ struct MenuBarView: View {
                         .accessibilityHidden(true)
                     Text(model.menuStateLine).font(Theme.font(14, .semibold)).foregroundColor(Theme.textPrimary)
                 }
-                Text("Reminder at \(model.reminderLabel) · \(model.settings.mode == .strict ? "Strict" : "Gentle")")
-                    .font(Theme.font(12)).foregroundColor(Theme.textSecondary)
+                Text(model.menuReminderLine)
+                    .font(Theme.font(12)).foregroundColor(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine).padding(Theme.s3)
             divider
@@ -54,7 +56,7 @@ struct MenuBarView: View {
             }.padding(Theme.s2)
             divider
             VStack(spacing: 2) {
-                MenuButton(title: "Settings…", shortcut: "⌘,") { NSApp.activate(ignoringOtherApps: true); NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+                MenuButton(title: "Settings…", shortcut: "⌘,") { model.openSettings() }
                 MenuButton(title: "Quit Gloamlog", shortcut: "⌘Q") { NSApp.terminate(nil) }
             }.padding(Theme.s2)
         }

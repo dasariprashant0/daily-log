@@ -18,10 +18,16 @@ struct PageHeader: View {
                 PageMenu(model: model, editor: editor)
             }
             HStack(spacing: Theme.s3) {
-                StreakChip(model: model)
+                if editor.day == model.today { StreakChip(model: model) }          // the streak belongs to Today, not every page
+                if let rel = model.relativeLabel(for: editor.day) {
+                    Text(rel).font(Theme.font(13)).foregroundColor(Theme.textSecondary).lineLimit(1)
+                }
                 WordProgress(model: model, editor: editor)
                 Spacer(minLength: Theme.s3)
                 SavedIndicator(editor: editor)
+            }
+            if model.isBeforeLogStart(editor.day) {
+                Text("Before your log start. It won't appear in Catch up.").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
             }
             Rectangle().fill(Theme.border).frame(height: 1).padding(.top, Theme.s3)
         }
@@ -71,31 +77,28 @@ struct StreakPopover: View {
     }
 }
 
-/// "8 / 20 words to log today" until the page has enough words, then "Logged ✓".
+/// "12 words. Counts as logged at 20." until the page has enough words, then "Logged, 63 words". No quota framing.
 struct WordProgress: View {
     @ObservedObject var model: AppModel
     @ObservedObject var editor: DayEditor
     var body: some View {
         let min = model.minWords
-        let isToday = editor.day == model.today
         Group {
             if !editor.showsEditor {
                 Text("Skipped" + (editor.skipReason.isEmpty ? "" : " · \(editor.skipReason)")).foregroundColor(Theme.textSecondary)
             } else if editor.isLogged {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark").font(Theme.font(11, .bold)).accessibilityHidden(true)
-                    Text("Logged").fontWeight(.semibold)
-                    Text("· \(Fmt.plural(editor.words, "word"))").foregroundColor(Theme.textSecondary)
+                    Text("Logged, \(Fmt.plural(editor.words, "word"))").fontWeight(.semibold)
                 }.foregroundColor(Theme.accentText)
             } else {
-                Text("\(editor.words) / \(min) words to log \(isToday ? "today" : "this day")")
-                    .foregroundColor(Theme.textSecondary)
+                Text("\(Fmt.plural(editor.words, "word")). Counts as logged at \(min).").foregroundColor(Theme.textSecondary)
             }
         }
         .font(Theme.font(13)).monospacedDigit()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(!editor.showsEditor ? "Skipped" : editor.isLogged ? "Logged. \(Fmt.plural(editor.words, "word"))."
-                            : "\(editor.words) of \(min) words to log \(isToday ? "today" : "this day")")
+        .accessibilityLabel(!editor.showsEditor ? "Skipped" : editor.isLogged ? "Logged, \(Fmt.plural(editor.words, "word"))."
+                            : "\(Fmt.plural(editor.words, "word")). Counts as logged at \(min).")
     }
 }
 
@@ -124,11 +127,16 @@ struct PageMenu: View {
             Button("Copy page as markdown") { model.copyPageMarkdown() }
             Button("Open folder") { model.revealPageInFinder() }
             Divider()
+            Button("Go to date…") { model.goToDateOpen = true }
+            Button("Catch up") { model.select(.catchUp) }
+            Divider()
             Button("Restore previous version…") { model.sheet = .restore(editor.day) }
             if let n = editor.backupNotice {
                 Divider()
                 Text("Backups: \(n)")
             }
+            Divider()
+            Button("Settings…") { model.openSettings() }
         } label: {
             Image(systemName: "ellipsis").font(Theme.font(15, .semibold)).foregroundColor(Theme.textSecondary)
                 .frame(width: 28, height: 28).contentShape(Rectangle())

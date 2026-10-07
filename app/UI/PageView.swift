@@ -23,6 +23,7 @@ struct DayPage: View {
     var body: some View {
         VStack(spacing: 0) {
             Column(top: 28, bottom: 0) {
+                if let s = model.session { SessionBar(model: model, session: s).padding(.bottom, Theme.s4) }
                 PageNotices(model: model, editor: editor)
                 PageHeader(model: model, editor: editor)
                 if editor.showsEditor { FromYesterdayStrip(model: model, editor: editor) }
@@ -91,8 +92,12 @@ struct PageNotices: View {
     private var showNag: Bool {
         editor.day == model.today && editor.showsEditor && model.isDue && model.nagDismissedDay != model.today
     }
+    /// Once a day on Today: earlier days are unlogged. Quiet, and never while the reminder or a catch-up session shows.
+    private var showCatch: Bool {
+        editor.day == model.today && editor.showsEditor && model.catchNoticeVisible && !showNag && model.session == nil
+    }
     var body: some View {
-        let any = model.folderProblem != nil || editor.errorText != nil || !model.orphans.isEmpty || model.editorProblem != nil || editor.loadFailed || editor.rawTextOnly || showNag || rollover
+        let any = model.folderProblem != nil || editor.errorText != nil || !model.orphans.isEmpty || model.editorProblem != nil || editor.loadFailed || editor.rawTextOnly || showNag || showCatch || rollover
             || editor.externalNotice || editor.backupNotice != nil || model.pageNotice != nil
         VStack(spacing: Theme.s2) {
             if let p = model.folderProblem { FolderBanner(model: model, problem: p, editor: editor) }
@@ -132,6 +137,19 @@ struct PageNotices: View {
                     Button(model.snoozeLabel) { model.snooze() }.buttonStyle(TextButtonStyle()).disabled(!model.canSnooze)
                     Button("Skip day") { model.requestSkip(day: model.today) }.buttonStyle(TextButtonStyle())
                 }.accessibilityLabel("Reminder")
+            }
+            if showCatch {
+                if let d = model.singleUnloggedYesterday {
+                    SlimNotice(text: "You haven't logged \(model.shortDate(d)).", onDismiss: { model.dismissCatchNotice() }) {
+                        Button("Write it") { model.select(.day(d)) }.buttonStyle(TextButtonStyle())
+                        Button("Skip day") { model.requestSkip(day: d) }.buttonStyle(TextButtonStyle())
+                    }.accessibilityLabel("Catch up")
+                } else {
+                    SlimNotice(text: model.catchUpLabel, onDismiss: { model.dismissCatchNotice() }) {
+                        Button("Catch up") { model.select(.catchUp) }.buttonStyle(TextButtonStyle())
+                        Button("Later") { model.dismissCatchNotice() }.buttonStyle(TextButtonStyle(color: Theme.textSecondary))
+                    }.accessibilityLabel("Catch up")
+                }
             }
             if rollover {
                 SlimNotice(text: "It's now \(DayKey.format(model.today, "EEEE, d MMMM", model.cal)). You're still writing \(DayKey.format(editor.day, "EEEE, d MMMM", model.cal)).",
