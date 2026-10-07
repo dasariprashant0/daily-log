@@ -20,7 +20,7 @@ rm -rf "$APP" Gloamlog.zip
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -parse-as-library -swift-version 5 -module-cache-path "$CLANG_MODULE_CACHE_PATH" \
-  -target "$(uname -m)-apple-macos13.0" Core/*.swift UI/*.swift -o "$APP/Contents/MacOS/Gloamlog"
+  -target "$(uname -m)-apple-macos13.0" $(find Core UI -name '*.swift' | sort) -o "$APP/Contents/MacOS/Gloamlog"   # recursive: subfolders like Core/Calendar are included (no spaces in source paths)
 
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R Resources/editor "$APP/Contents/Resources/editor"

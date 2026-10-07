@@ -16,6 +16,7 @@
 import Foundation
 
 enum ReminderMode: String, Codable { case strict, gentle }
+enum AppAppearance: String, Codable, CaseIterable { case system, light, dark }
 
 protocol KeyValueStore: AnyObject {
     func data(forKey key: String) -> Data?
@@ -49,12 +50,19 @@ struct Settings: Codable, Equatable {
     var carryOverHeadings: [String] = Settings.defaultCarryOverHeadings
     var minWords = Settings.defaultMinWords
     var onboarded = false
+    // v0.4 (M1): real-world navigation and look. All optional with safe defaults, so older saves decode unchanged.
+    var logStartDate: String? = nil               // "yyyy-MM-dd": days before it are never "missed"; nil = the first log in the folder
+    var appearance: AppAppearance = .system
+    var weekStart: Int? = nil                     // nil = follow the system calendar; else a Calendar weekday 1...7 (1 = Sunday)
+    var catchUpWindowDays = 30                    // how far back "Catch up" looks
+    static let catchUpWindowRange = 7...365
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
         case reminderMinutes, weekdays, mode, snoozeMinutes, storageFolder, launchAtLogin
         case template, carryOverHeadings, minWords, onboarded
+        case logStartDate, appearance, weekStart, catchUpWindowDays
     }
     private enum LegacyKeys: String, CodingKey { case sections }
     private struct LegacySection: Decodable { var title: String }
@@ -71,6 +79,10 @@ struct Settings: Codable, Equatable {
         carryOverHeadings = try c.decodeIfPresent([String].self, forKey: .carryOverHeadings) ?? carryOverHeadings
         minWords = try c.decodeIfPresent(Int.self, forKey: .minWords) ?? minWords
         onboarded = try c.decodeIfPresent(Bool.self, forKey: .onboarded) ?? onboarded
+        logStartDate = try c.decodeIfPresent(String.self, forKey: .logStartDate)
+        appearance = try c.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? appearance
+        weekStart = try c.decodeIfPresent(Int.self, forKey: .weekStart)
+        catchUpWindowDays = try c.decodeIfPresent(Int.self, forKey: .catchUpWindowDays) ?? catchUpWindowDays
         if let t = try c.decodeIfPresent(String.self, forKey: .template) {
             template = t
         } else if let lc = try? d.container(keyedBy: LegacyKeys.self),
@@ -90,6 +102,9 @@ struct Settings: Codable, Equatable {
         if !Settings.snoozeChoices.contains(snoozeMinutes) { s.snoozeMinutes = 15 }
         s.minWords = min(max(minWords, Settings.minWordsRange.lowerBound), Settings.minWordsRange.upperBound)
         s.carryOverHeadings = carryOverHeadings.map { $0.dlTrimmed }.filter { !$0.isEmpty }
+        s.catchUpWindowDays = min(max(catchUpWindowDays, Settings.catchUpWindowRange.lowerBound), Settings.catchUpWindowRange.upperBound)
+        if let d = logStartDate, !DayKey.isWellFormed(d) { s.logStartDate = nil }
+        if let w = weekStart, !(1...7).contains(w) { s.weekStart = nil }
         return s
     }
 

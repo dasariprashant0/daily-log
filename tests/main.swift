@@ -1162,6 +1162,28 @@ test("store -> fileStates -> streak/heatmap/status/planner agree under the words
     try expect(Streak.compute(states: try store.fileStates(minWords: 20), now: now, calendar: cal, weekdays: workdays).current == 1, "Friday missed -> only Monday counts")
 }
 
+// MARK: settings added for real-world navigation (M1)
+test("settings M1 fields: defaults, round trip, tolerant decode, clamping") {
+    let d = Settings()
+    expect(d.logStartDate == nil && d.appearance == .system && d.weekStart == nil && d.catchUpWindowDays == 30)
+    let mem = MemoryStore()
+    var s = Settings(); s.logStartDate = "2026-10-01"; s.appearance = .dark; s.weekStart = 2; s.catchUpWindowDays = 90
+    s.save(to: mem)
+    let back = Settings.load(from: mem)
+    expect(back.logStartDate == "2026-10-01" && back.appearance == .dark && back.weekStart == 2 && back.catchUpWindowDays == 90)
+    // a v0.3 save (none of the new keys) decodes to the defaults
+    let old = #"{"reminderMinutes":1020,"minWords":25,"onboarded":true}"#.data(using: .utf8)!
+    let o = try JSONDecoder().decode(Settings.self, from: old).normalized()
+    expect(o.minWords == 25 && o.onboarded && o.logStartDate == nil && o.appearance == .system && o.catchUpWindowDays == 30)
+    // clamping and validation
+    var bad = Settings(); bad.catchUpWindowDays = 3; bad.logStartDate = "garbage"; bad.weekStart = 9
+    let n = bad.normalized()
+    expect(n.catchUpWindowDays == 7 && n.logStartDate == nil && n.weekStart == nil)
+    bad.catchUpWindowDays = 99999; bad.weekStart = 2; bad.logStartDate = "2026-09-30"
+    let m = bad.normalized()
+    expect(m.catchUpWindowDays == 365 && m.weekStart == 2 && m.logStartDate == "2026-09-30")
+}
+
 // MARK: legacy migration (rename Daily Log -> Gloamlog)
 test("legacy migration: settings keys are copied once, never overwritten, system keys ignored") {
     let oldName = "dl-test-old-" + UUID().uuidString, newName = "dl-test-new-" + UUID().uuidString
