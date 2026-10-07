@@ -1,6 +1,6 @@
-// Heatmap.swift - 12-week activity grid (in the streak popover on the page header) and the last-7-days strip (menu bar).
-// States differ by shape, not hue: filled square (logged), dash (skipped), bordered empty (missed),
-// faint dot (non-workday), ring (today), blank (future).
+// Heatmap.swift - 12-week activity grid (in the streak popover) and the last-7-days strip (menu bar).
+// States differ by shape, not hue, with the same vocabulary as the calendar: filled square (logged), half disc (started),
+// amber ring (not logged), dash (skipped), faint dot (non-workday), accent ring (today), blank (future). Marks reach 3:1.
 import SwiftUI
 
 struct HeatCellView: View {
@@ -10,11 +10,13 @@ struct HeatCellView: View {
         ZStack {
             switch cell.status {
             case .logged: Theme.rect(3).fill(Theme.heat[4])
-            case .partial: Theme.rect(3).fill(Theme.heat[2])
+            case .partial:
+                Theme.rect(3).fill(Theme.heat[0])
+                DayMark(status: .partial, size: size * 0.5)
             case .skipped:
                 Theme.rect(3).fill(Theme.heat[0])
                 Rectangle().fill(Theme.textTertiary).frame(width: size * 0.5, height: 1.5)
-            case .missed: Theme.rect(3).stroke(Theme.borderStrong, lineWidth: 1)
+            case .missed: if !cell.isToday { Theme.rect(3).stroke(Theme.warning, lineWidth: 1.25) }
             case .off: Circle().fill(Theme.borderStrong.opacity(0.7)).frame(width: 3, height: 3)
             case .future: Color.clear
             }
@@ -26,14 +28,14 @@ struct HeatCellView: View {
 
 enum HeatText {
     static func word(_ s: DayStatus) -> String {
-        switch s { case .logged: return "logged"; case .partial: return "partly logged"; case .skipped: return "skipped"
+        switch s { case .logged: return "logged"; case .partial: return "started"; case .skipped: return "skipped"
         case .missed: return "not logged"; case .off: return "not a workday"; case .future: return "upcoming" }
     }
     static func summary(_ weeks: [[HeatCell]]) -> String {
         let all = weeks.flatMap { $0 }
         let l = all.filter { $0.status == .logged }.count, s = all.filter { $0.status == .skipped }.count
         let m = all.filter { $0.status == .missed && !$0.isToday }.count
-        return "Activity, last 12 weeks: \(l) logged, \(s) skipped, \(m) missed"
+        return "Activity, last 12 weeks: \(l) logged, \(s) skipped, \(m) not logged"
     }
 }
 
@@ -73,8 +75,9 @@ struct HeatLegend: View {
     var body: some View {
         HStack(spacing: 6) {
             item(AnyView(Theme.rect(2).fill(Theme.heat[4]).frame(width: 9, height: 9)), "logged")
+            item(AnyView(ZStack { Theme.rect(2).fill(Theme.heat[0]); DayMark(status: .partial, size: 5) }.frame(width: 9, height: 9)), "started")
+            item(AnyView(Theme.rect(2).stroke(Theme.warning, lineWidth: 1.25).frame(width: 9, height: 9)), "not logged")
             item(AnyView(ZStack { Theme.rect(2).fill(Theme.heat[0]); Rectangle().fill(Theme.textTertiary).frame(width: 5, height: 1.5) }.frame(width: 9, height: 9)), "skipped")
-            item(AnyView(Theme.rect(2).stroke(Theme.borderStrong, lineWidth: 1).frame(width: 9, height: 9)), "missed")
         }
         .accessibilityHidden(true)
     }

@@ -14,6 +14,7 @@ extension AppModel {
     func skip(day: String, through: String?, reason: String, completion: @escaping (SkipFailure?) -> Void) {
         flushEditor { [weak self] in
             guard let self = self else { return }
+            self.pinLogStart(before: day)               // a skip before the first page must not open a gap of unlogged days
             do {
                 if let to = through, to > day {
                     let n = try self.store.skipRange(from: day, to: to, reason: reason, weekdays: self.settings.weekdays, calendar: self.cal)
@@ -28,7 +29,8 @@ extension AppModel {
             catch { completion(.message(error.localizedDescription)); return }
             self.reload()
             if live { Notifier.shared.cancelAll() }
-            if case .day(let k) = self.selection { self.editor?.abandon(); self.openDay(k, force: true) }
+            // In a catch-up session the caller moves on to the next day, so the skipped page is not shown again.
+            if case .day(let k) = self.selection, self.session == nil { self.editor?.abandon(); self.openDay(k, force: true) }
             completion(nil)
         }
     }

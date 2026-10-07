@@ -63,6 +63,32 @@ struct StatusGlyph: View {
     }
 }
 
+/// The one mark vocabulary (DESIGN_V4 principle 5), used by the calendar, the week tiles and the heat map: filled disc =
+/// logged, half disc = started, hollow ring = not written, dash = skipped. Shape carries the meaning, hue only helps.
+/// Nothing for days off and days to come. `onFill` redraws it for the selected day's accent fill.
+struct DayMark: View {
+    let status: DayStatus
+    var size: CGFloat = Theme.calMark
+    var onFill = false
+    var showsMissed = true               // today never wears the amber ring
+    var body: some View {
+        ZStack {
+            switch status {
+            case .logged: Circle().fill(onFill ? Theme.onAccent : Theme.accent).frame(width: size, height: size)
+            case .partial:
+                Image(systemName: "circle.lefthalf.filled").font(.system(size: size + 1.5))
+                    .foregroundColor(onFill ? Theme.onAccent : Theme.textSecondary)
+            case .missed:
+                if showsMissed { Circle().strokeBorder(onFill ? Theme.onAccent : Theme.warning, lineWidth: 1.25).frame(width: size, height: size) }
+            case .skipped: Capsule().fill(onFill ? Theme.onAccent : Theme.textTertiary).frame(width: size + 1, height: 1.5)
+            case .off, .future: EmptyView()
+            }
+        }
+        .frame(width: size + 2, height: size + 2)
+        .accessibilityHidden(true)
+    }
+}
+
 struct EmptyHint: View {
     let text: String
     var body: some View {
