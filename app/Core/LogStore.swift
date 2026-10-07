@@ -99,6 +99,18 @@ private enum BackupName {
 final class LogStore {
     static let maxBackupsPerDay = 10
 
+    /// The Jots rule behind "logged" (M2): which heading holds the jots, and whether their words count toward a day being logged.
+    /// The app sets it from Settings.capture; DayDocument.words/status, fileStates and everything built on them follow it.
+    /// Both spellings compile: `LogStore.jotsRules = (heading: "Jots", countTowardLogged: false)` and `LogStore.JotsRules(heading:countTowardLogged:)`.
+    /// Guarded by a lock: background readers (fileStates off the main thread) never see a half-written value.
+    typealias JotsRules = (heading: String, countTowardLogged: Bool)
+    private static let jotsRulesLock = NSLock()
+    private static var storedJotsRules: JotsRules = (heading: "Jots", countTowardLogged: false)
+    static var jotsRules: JotsRules {
+        get { jotsRulesLock.lock(); defer { jotsRulesLock.unlock() }; return storedJotsRules }
+        set { jotsRulesLock.lock(); defer { jotsRulesLock.unlock() }; storedJotsRules = newValue }
+    }
+
     let dir: URL
     let backupDir: URL?
     var minBackupInterval: TimeInterval

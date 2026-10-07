@@ -25,6 +25,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Right-click on the Dock icon (DESIGN_V4 section 1): Today, Jot, Catch Up, Settings.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        for (title, action) in [("Today", #selector(dockToday)), ("Jot…", #selector(dockJot)),
+                                ("Catch Up", #selector(dockCatchUp)), ("Settings…", #selector(dockSettings))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        return menu
+    }
+    @objc private func dockToday() { let m = AppModel.shared; m.showMainWindow(activate: true); m.openToday() }
+    @objc private func dockJot() { AppModel.shared.showJotPanel(source: "menu") }
+    @objc private func dockCatchUp() { let m = AppModel.shared; m.showMainWindow(activate: true); m.select(.catchUp) }
+    @objc private func dockSettings() { AppModel.shared.openSettings() }
+
     static func showAbout() {
         let info = Bundle.main.infoDictionary
         let v = info?["CFBundleShortVersionString"] as? String ?? "0.3.0"

@@ -2,6 +2,7 @@
 // the scenes. Every toolbar and sidebar action has a command here (HIG), with the keyboard map of UX_FLOWS 5.1:
 //   Go    Today ⌘T (⌘1 in the window)   Catch Up ⌘2   Week Review ⌘3   Previous / Next Day ⌘[ ⌘]   Go to Date… ⇧⌘T
 //         Next Unlogged Day ⌘↩ (⌥⌘↓ in a session)   Previous Unlogged Day ⌥⌘↑
+//   Page  Jot… (M2) shows the recorded global shortcut, ⌃⌥J by default; Settings > Shortcuts changes or removes it
 // Collisions: the editor binds Mod-[ and Mod-] to outdent/indent inside a list item or a table cell, so ⌘[ ⌘] reach this
 // menu everywhere else; Mod-Enter only inside a table. Nothing here uses a key the editor binds anywhere else.
 import SwiftUI
@@ -49,6 +50,12 @@ struct AppCommands: Commands {
             Divider()
             Button("Skip Day…") { model.requestSkip(day: onDay ? model.editor?.day : nil) }.keyboardShortcut("k", modifiers: [.command, .shift])
             Button("Remind Me Later") { model.snooze() }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(!model.isDue || !model.canSnooze)
+            // The menu item shows the recorded global shortcut (none when it is Off or has no menu form).
+            if let k = model.settings.capture.hotKey?.menuShortcut {
+                Button("Jot…") { model.showJotPanel(source: "menu") }.keyboardShortcut(k.key, modifiers: k.modifiers)
+            } else {
+                Button("Jot…") { model.showJotPanel(source: "menu") }
+            }
             Divider()
             Button("Restore Previous Version…") { if let d = model.editor?.day { model.sheet = .restore(d) } }.disabled(!onDay)
             Button("Settings…") { model.openSettings() }
