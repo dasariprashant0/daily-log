@@ -21,7 +21,13 @@
 //   documents(from:to:) -> [String: DayDocument] / allDocuments()
 //   search(query, heading:) -> [SearchHit]         see Search.swift
 //   folderSummary() -> FolderSummary  counts for Settings > Storage
+//   folderStamp() -> String           changes when a day file is added, removed, renamed, edited or touched; stat only, no reads
 //   assets -> AssetStore              images for this folder
+//
+// Writes (day files and backups) go through AtomicFile: a hidden ".gloamlog-tmp-<pid>-<uuid>" file, then rename. A SIGKILL can leave
+//   at most that one hidden file, which the next store's first write removes (tests/run-kill-tests.sh proves it: 40 killed rounds).
+//   skipDays/unskipDays (batch skip + undo, Calendar/CatchUp.swift) and folderStamp() (change detection without reading files) live
+//   here and there; see their comments.
 //
 // Backups (safety net so autosave can never destroy a day of writing; only when backupDir is set):
 //   Before save() overwrites OR deletes an existing day file, the old file is copied byte-for-byte to
@@ -170,14 +176,60 @@ final class LogStore {
         return s
     }
 
+    /// A string that changes whenever a day file is added, removed, renamed, edited or touched: the sorted (name, mtime in ns, size)
+    /// of the YYYY-MM-DD.md files, one per line. Only readdir and stat are called, no file is opened or read (3,650 files take a few
+    /// ms even in an unoptimised build), so the UI can poll it and reload only when it changed. assets/, a backups folder, hidden,
+    /// foreign files and folders are ignored; a symlinked day file counts through its target. A missing folder throws like the other reads.
+    func folderStamp() throws -> String {
+        try checkFolder(writable: false)
+        guard let handle = opendir(dir.path) else { throw LogError.io(String(cString: strerror(errno))) }
+        defer { closedir(handle) }
+        let fd = dirfd(handle)
+        var rows = [(key: Int, line: String)]()
+        while let entry = readdir(handle) {
+            withUnsafePointer(to: &entry.pointee.d_name) { field in
+                field.withMemoryRebound(to: CChar.self, capacity: 14) { name in
+                    guard let key = LogStore.dayNumber(ofFileName: name) else { return }       // not YYYY-MM-DD.md: never even stat'ed
+                    var st = stat()
+                    guard fstatat(fd, name, &st, 0) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return }
+                    rows.append((key, "\(String(cString: name)) \(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec) \(st.st_size)"))
+                }
+            }
+        }
+        rows.sort { $0.key < $1.key }
+        return rows.map { $0.line }.joined(separator: "\n")
+    }
+    /// 20261005 for the NUL-terminated name "2026-10-05.md" (digits at the date positions, nothing before or after); nil for any other name.
+    private static func dayNumber(ofFileName p: UnsafePointer<CChar>) -> Int? {
+        guard p[4] == 45, p[7] == 45, p[10] == 46, p[11] == 109, p[12] == 100, p[13] == 0 else { return nil }   // - - . m d NUL
+        var n = 0
+        for i in [0, 1, 2, 3, 5, 6, 8, 9] {
+            let digit = Int(p[i]) - 48
+            guard digit >= 0 && digit <= 9 else { return nil }
+            n = n * 10 + digit
+        }
+        return n
+    }
+
     // MARK: write
+    private var swept = false
+    /// The first write or backup of a store removes the temp files a killed writer left behind (AtomicFile), in the log folder and the
+    /// backups folder. Reading never sweeps. Once per store, i.e. once per launch.
+    private func sweepOnce() {
+        guard !swept else { return }
+        swept = true
+        AtomicFile.sweep(in: dir)
+        if let b = backupDir { AtomicFile.sweep(in: b) }
+    }
+
     private func write(_ text: String, day: String) throws {
         try checkFolder()
-        do { try text.write(to: url(for: day), atomically: true, encoding: .utf8) }
+        sweepOnce()
+        do { try AtomicFile.write(Data(text.utf8), to: url(for: day)) }
         catch let e as NSError {
-            if e.domain == NSCocoaErrorDomain && (e.code == NSFileWriteNoPermissionError || e.code == NSFileWriteVolumeReadOnlyError) {
-                throw LogError.folderNotWritable(dir.path)
-            }
+            let noPermission = (e.domain == NSCocoaErrorDomain && (e.code == NSFileWriteNoPermissionError || e.code == NSFileWriteVolumeReadOnlyError))
+                || (e.domain == NSPOSIXErrorDomain && [EACCES, EPERM, EROFS].contains(Int32(e.code)))
+            if noPermission { throw LogError.folderNotWritable(dir.path) }
             throw LogError.io(e.localizedDescription)
         }
     }
@@ -227,7 +279,8 @@ final class LogStore {
 
     /// Copies the current day file (`data`, already read by the caller) into the backup folder, then prunes. Never throws.
     private func backUpCurrent(day: String, data: Data?, text: String?, throttled: Bool) -> BackupResult {
-        guard let dayDir = backupDayDir(day) else { return .notNeeded }
+        guard let dayDir = backupDayDir(day), let root = backupDir else { return .notNeeded }
+        sweepOnce()
         if let t = text {
             let page = MarkdownFormat.parse(day: day, raw: t)
             if page.isSkipped || MarkdownBody.trimBody(page.body).isEmpty { return .notNeeded }   // nothing worth keeping
@@ -240,7 +293,7 @@ final class LogStore {
                 if throttled, minBackupInterval > 0, stamp.timeIntervalSince(newest) < minBackupInterval { return .notNeeded }
                 if BackupName.stem(stamp) <= BackupName.stem(newest) { stamp = newest.addingTimeInterval(1) }   // keep names increasing
             }
-            try bytes.write(to: dayDir.appendingPathComponent(BackupName.stem(stamp) + BackupName.ext), options: .atomic)
+            try AtomicFile.write(bytes, to: dayDir.appendingPathComponent(BackupName.stem(stamp) + BackupName.ext), tempDir: root)
         } catch {
             return .failed("Could not write a backup of \(day).md: \(error.localizedDescription)")
         }

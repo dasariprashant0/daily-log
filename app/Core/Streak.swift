@@ -18,7 +18,8 @@ enum Status {
         let today = DayKey.string(now, calendar)
         if day > today { return .future }
         if let f = fileState { return f }
-        if let s = since, day < s { return .off }
+        // No log start and no page yet (a brand-new install): nothing before today is due, so there is no wall of "missed" days.
+        if day < (since ?? today) { return .off }
         return weekdays.contains(DayKey.weekday(day, calendar)) ? .missed : .off
     }
     /// The day before which nothing counts as missed: the user's log start date, else the earliest day with a file.
