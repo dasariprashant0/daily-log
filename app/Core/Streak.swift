@@ -21,14 +21,21 @@ enum Status {
         if let s = since, day < s { return .off }
         return weekdays.contains(DayKey.weekday(day, calendar)) ? .missed : .off
     }
+    /// The day before which nothing counts as missed: the user's log start date, else the earliest day with a file.
+    /// Pinning this (Settings.logStartDate) is what lets someone backfill an older day without creating a wall of "missed" days.
+    static func effectiveSince(setting: String?, states: [String: DayStatus]) -> String? { setting ?? states.keys.min() }
 }
 
 struct StreakResult: Equatable { var current: Int; var best: Int }
 
 enum Streak {
-    static func compute(states: [String: DayStatus], now: Date, calendar: Calendar, weekdays: Set<Int>) -> StreakResult {
+    /// `since` = the log start (see Status.effectiveSince): the streak is counted from that day on, so pages written before it
+    /// neither extend nor break the streak. nil keeps the old rule: count from the earliest day with a file.
+    static func compute(states: [String: DayStatus], now: Date, calendar: Calendar, weekdays: Set<Int>,
+                        since: String? = nil) -> StreakResult {
         let today = DayKey.string(now, calendar)
-        guard var cur = states.keys.filter({ $0 <= today }).min(), var date = DayKey.date(cur, calendar) else {
+        let start = since ?? states.keys.filter({ $0 <= today }).min()
+        guard let first = start, first <= today, var cur = Optional(first), var date = DayKey.date(first, calendar) else {
             return StreakResult(current: 0, best: 0)
         }
         var run = 0, best = 0, steps = 0
@@ -53,10 +60,11 @@ struct HeatCell: Equatable {
 }
 
 enum Heatmap {
-    static func weeks(states: [String: DayStatus], now: Date, calendar: Calendar, weekdays: Set<Int>, count: Int = 12) -> [[HeatCell]] {
+    static func weeks(states: [String: DayStatus], now: Date, calendar: Calendar, weekdays: Set<Int>, count: Int = 12,
+                      since logStart: String? = nil) -> [[HeatCell]] {
         guard let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start else { return [] }
         let today = DayKey.string(now, calendar)
-        let since = states.keys.min()
+        let since = Status.effectiveSince(setting: logStart, states: states)
         var cols = [[HeatCell]]()
         for w in stride(from: -(count - 1), through: 0, by: 1) {
             guard let ws = calendar.date(byAdding: .weekOfYear, value: w, to: thisWeek) else { continue }

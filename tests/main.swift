@@ -1162,6 +1162,36 @@ test("store -> fileStates -> streak/heatmap/status/planner agree under the words
     try expect(Streak.compute(states: try store.fileStates(minWords: 20), now: now, calendar: cal, weekdays: workdays).current == 1, "Friday missed -> only Monday counts")
 }
 
+// MARK: log start date (M1)
+test("log start: backfilling an older day creates no wall of missed days and leaves the streak alone") {
+    let now = mk(2026, 10, 7)                      // Wednesday
+    var st: [String: DayStatus] = ["2026-10-05": .logged, "2026-10-06": .logged]
+    let before = Streak.compute(states: st, now: now, calendar: cal, weekdays: workdays, since: "2026-10-01")
+    expect(before == StreakResult(current: 2, best: 2), "\(before)")
+    st["2026-09-14"] = .logged                     // backfill a Monday weeks earlier
+    // without a pinned start the earliest file moves back and 15 Sep - 2 Oct become "missed"
+    let unpinned = Status.effectiveSince(setting: nil, states: st)
+    expect(unpinned == "2026-09-14")
+    expect(Status.resolve(day: "2026-09-15", fileState: nil, now: now, calendar: cal, weekdays: workdays, since: unpinned) == .missed)
+    // with the start pinned they are off, and the streak is exactly what it was
+    let since = Status.effectiveSince(setting: "2026-10-01", states: st)
+    expect(since == "2026-10-01")
+    expect(Status.resolve(day: "2026-09-15", fileState: nil, now: now, calendar: cal, weekdays: workdays, since: since) == .off)
+    expect(Status.resolve(day: "2026-09-14", fileState: .logged, now: now, calendar: cal, weekdays: workdays, since: since) == .logged,
+           "the backfilled page itself still shows as logged")
+    expect(Streak.compute(states: st, now: now, calendar: cal, weekdays: workdays, since: since) == before)
+    let flat = Heatmap.weeks(states: st, now: now, calendar: cal, weekdays: workdays, since: "2026-10-01").flatMap { $0 }
+    expect(flat.first { $0.day == "2026-09-15" }?.status == .off && flat.first { $0.day == "2026-09-14" }?.status == .logged)
+}
+test("log start: nil keeps the old rule; a start after today counts nothing") {
+    let now = mk(2026, 10, 7)
+    let st: [String: DayStatus] = ["2026-10-05": .logged, "2026-10-06": .logged]
+    expect(Streak.compute(states: st, now: now, calendar: cal, weekdays: workdays)
+           == Streak.compute(states: st, now: now, calendar: cal, weekdays: workdays, since: nil))
+    expect(Streak.compute(states: st, now: now, calendar: cal, weekdays: workdays, since: "2026-10-20") == StreakResult(current: 0, best: 0))
+    expect(Status.effectiveSince(setting: nil, states: st) == "2026-10-05" && Status.effectiveSince(setting: nil, states: [:]) == nil)
+}
+
 // MARK: settings added for real-world navigation (M1)
 test("settings M1 fields: defaults, round trip, tolerant decode, clamping") {
     let d = Settings()

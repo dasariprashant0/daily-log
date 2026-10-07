@@ -9,6 +9,14 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 }
 
 extension AppModel {
+    /// The calendar the whole app uses. `Settings.weekStart` (nil = follow the system) sets the first weekday, so the
+    /// month grid, Week review and heatmap all start the week where the user wants. AppModel.cal must be built from this.
+    static func makeCalendar(weekStart: Int?) -> Calendar {
+        var c = Calendar.current
+        if let w = weekStart, (1...7).contains(w) { c.firstWeekday = w }
+        return c
+    }
+
     /// Opens the Settings window, optionally on a pane. Callable from the sidebar gear, menus, banners and the menu-bar popover.
     func openSettings(pane: SettingsPane? = nil) {
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)   // stub: opens the existing Settings scene
