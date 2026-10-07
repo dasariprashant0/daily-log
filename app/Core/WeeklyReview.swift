@@ -1,49 +1,59 @@
 // WeeklyReview.swift - one week's aggregate and "Copy week as markdown".
 //
 // API:
-//   WeeklyReview.summary(weekContaining:, entries:, states:, settings:, calendar:, now:) -> WeekSummary
-//       entries = [dayKey: DayEntry] (LogStore.entries(from:to:)); states = LogStore.fileStates()
+//   WeeklyReview.summary(weekContaining:, documents:, states:, settings:, calendar:, now:) -> WeekSummary
+//       documents = [dayKey: DayDocument] (LogStore.documents(from:to:)); states = LogStore.fileStates(minWords:)
 //   WeeklyReview.shift(_ date, weeks:, calendar:) -> Date          prev/next week (UI disables future)
-//   WeeklyReview.markdown(for:, grouping: .day | .section, sections:, calendar:) -> String
-//   WeekSummary: weekStart, weekEnd, days:[WeekDay], loggedCount, workdayCount (scheduled days not in the future),
-//                skippedCount, items(forSection:) -> [(day, text)]   e.g. items(forSection: "finished")
-// Weeks start on calendar.firstWeekday. Unlogged days are omitted from the markdown (never listed as missed).
+//   WeeklyReview.markdown(for:, grouping: .day | .section, calendar:) -> String
+//   WeekSummary: weekStart, weekEnd, days:[WeekDay{day,status,doc}], loggedCount, workdayCount (scheduled days not in the
+//                future), skippedCount, sections:[WeekSection{title,isOther,items:[WeekItem{day,text}]}],
+//                section(titled:) -> WeekSection?
+// By section: for every heading of settings.template (template order) the text under matching headings across the week
+// (matched by normalised title; nested sub-headings stay inside, shown as bold labels), then "Other notes" = everything else
+// (text before the first heading, headings not in the template). Empty groups are left out.
+// By day: each non-empty page with headings re-levelled under "## Mon 5 Oct" (shallowest heading becomes ###) and empty
+// sections removed. Skipped days print "_Skipped: reason_". Unlogged days are omitted (never listed as missed).
+// Weeks start on calendar.firstWeekday.
 import Foundation
 
 struct WeekDay: Equatable {
     var day: String
     var status: DayStatus
-    var entry: DayEntry?
+    var doc: DayDocument?
+}
+struct WeekItem: Equatable { var day: String; var text: String }
+struct WeekSection: Equatable {
+    var title: String
+    var isOther: Bool
+    var items: [WeekItem]
 }
 
 struct WeekSummary: Equatable {
     var weekStart: String
     var weekEnd: String
     var days: [WeekDay]
-    var sections: [SectionDef]
+    var sections: [WeekSection]
     var loggedCount: Int
     var workdayCount: Int
     var skippedCount: Int
 
-    func items(forSection id: String) -> [(day: String, text: String)] {
-        days.compactMap { d in
-            guard let t = d.entry?.texts[id], !t.dlTrimmed.isEmpty, d.status != .skipped else { return nil }
-            return (d.day, t)
-        }
-    }
-    static func == (a: WeekSummary, b: WeekSummary) -> Bool {
-        a.weekStart == b.weekStart && a.days == b.days && a.loggedCount == b.loggedCount
+    /// First group whose title matches under MarkdownBody.normalizeHeading ("finished" finds "✅ Finished"; "other notes" finds the rest).
+    func section(titled t: String) -> WeekSection? {
+        let n = MarkdownBody.normalizeHeading(t)
+        return sections.first { MarkdownBody.normalizeHeading($0.title) == n }
     }
 }
 
 enum WeekGrouping { case day, section }
 
 enum WeeklyReview {
+    static let otherTitle = "Other notes"
+
     static func shift(_ date: Date, weeks: Int, calendar: Calendar) -> Date {
         calendar.date(byAdding: .weekOfYear, value: weeks, to: date) ?? date
     }
 
-    static func summary(weekContaining date: Date, entries: [String: DayEntry], states: [String: DayStatus],
+    static func summary(weekContaining date: Date, documents: [String: DayDocument], states: [String: DayStatus],
                         settings: Settings, calendar: Calendar, now: Date) -> WeekSummary {
         let start = calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? date
         let since = states.keys.min()
@@ -52,41 +62,59 @@ enum WeeklyReview {
             guard let d = calendar.date(byAdding: .day, value: i, to: start) else { continue }
             let k = DayKey.string(d, calendar)
             let st = Status.resolve(day: k, fileState: states[k], now: now, calendar: calendar, weekdays: settings.weekdays, since: since)
-            days.append(WeekDay(day: k, status: st, entry: entries[k]))
+            days.append(WeekDay(day: k, status: st, doc: documents[k]))
             if st == .logged { logged += 1 }
             if st == .skipped { skipped += 1 }
             if st != .future && settings.weekdays.contains(calendar.component(.weekday, from: d)) { work += 1 }
         }
-        return WeekSummary(weekStart: days.first?.day ?? "", weekEnd: days.last?.day ?? "", days: days, sections: settings.sections,
+
+        let template = MarkdownBody.headings(inTemplate: settings.template)
+        let norm = template.map { MarkdownBody.normalizeHeading($0) }
+        var buckets = [[WeekItem]](repeating: [], count: template.count)
+        var other = [WeekItem]()
+        for wd in days {
+            guard let doc = wd.doc, !doc.isSkipped else { continue }
+            let p = MarkdownBody.partition(doc.body, headings: norm)
+            var per = [Int: [String]]()
+            for m in p.matched { per[m.index, default: []].append(m.text) }
+            for (i, texts) in per.sorted(by: { $0.key < $1.key }) {
+                buckets[i].append(WeekItem(day: wd.day, text: texts.joined(separator: "\n\n")))
+            }
+            if !p.other.isEmpty { other.append(WeekItem(day: wd.day, text: p.other)) }
+        }
+        var sections = [WeekSection]()
+        for i in template.indices where !buckets[i].isEmpty { sections.append(WeekSection(title: template[i], isOther: false, items: buckets[i])) }
+        if !other.isEmpty { sections.append(WeekSection(title: otherTitle, isOther: true, items: other)) }
+
+        return WeekSummary(weekStart: days.first?.day ?? "", weekEnd: days.last?.day ?? "", days: days, sections: sections,
                            loggedCount: logged, workdayCount: work, skippedCount: skipped)
     }
 
-    static func markdown(for w: WeekSummary, grouping: WeekGrouping, sections: [SectionDef], calendar: Calendar) -> String {
+    static func markdown(for w: WeekSummary, grouping: WeekGrouping, calendar: Calendar) -> String {
         func short(_ k: String) -> String { DayKey.format(k, "EEE d MMM", calendar) }
         var out = "# Week of \(DayKey.format(w.weekStart, "d MMM", calendar)) – \(DayKey.format(w.weekEnd, "d MMM yyyy", calendar))\n\n"
         out += "Logged \(w.loggedCount) of \(w.workdayCount) workdays" + (w.skippedCount > 0 ? " · \(w.skippedCount) skipped" : "") + "\n\n"
         switch grouping {
         case .day:
             for d in w.days {
-                guard let e = d.entry else { continue }
-                if d.status == .skipped {
-                    out += "## \(short(d.day))\n_Skipped" + (e.skipReason.isEmpty ? "" : ": \(e.skipReason)") + "_\n\n"
+                guard let doc = d.doc else { continue }
+                if doc.isSkipped {
+                    out += "## \(short(d.day))\n_Skipped" + (doc.skipReason.isEmpty ? "" : ": \(doc.skipReason)") + "_\n\n"
                     continue
                 }
-                var body = ""
-                for s in sections { if let t = e.texts[s.id], !t.dlTrimmed.isEmpty { body += "### \(s.title)\n\(t)\n\n" } }
-                for x in e.extras where !x.text.dlTrimmed.isEmpty { body += "### \(x.title)\n\(x.text)\n\n" }
-                if !body.isEmpty { out += "## \(short(d.day))\n\n" + body }
+                let body = MarkdownBody.shiftHeadings(in: MarkdownBody.pruneEmptySections(doc.body), minLevel: 3)
+                if MarkdownBody.hasContent(body) { out += "## \(short(d.day))\n\n\(body)\n\n" }
             }
         case .section:
-            for s in sections {
-                let items = w.items(forSection: s.id)
-                if items.isEmpty { continue }
+            for s in w.sections {
                 out += "## \(s.title)\n\n"
-                for it in items {
+                for it in s.items {
                     let lines = it.text.components(separatedBy: "\n")
-                    out += "- **\(short(it.day))**: \(lines[0])\n"
-                    for l in lines.dropFirst() { out += l.isEmpty ? "\n" : "  \(l)\n" }
+                    let first = lines[0]
+                    let plain = MarkdownBody.stripMarkers(first).text == first.dlTrimmed && !first.hasPrefix("```")
+                        && !(lines.count > 1 && first.hasPrefix("**") && first.hasSuffix("**"))
+                    out += "- **\(short(it.day))**" + (plain ? ": \(first)\n" : "\n")
+                    for l in (plain ? Array(lines.dropFirst()) : lines) { out += l.isEmpty ? "\n" : "  \(l)\n" }
                 }
                 out += "\n"
             }

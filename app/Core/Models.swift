@@ -1,11 +1,13 @@
-// Models.swift - core value types for Daily Log v0.2 (Foundation only).
+// Models.swift - core value types for Gloamlog v0.3 (Foundation only). See docs/EDITOR_CONTRACT.md.
 //
 // API:
-//   DayKey            "yyyy-MM-dd" day strings: string(date,cal) / date(key,cal) / adding(key,n,cal) / weekday(key,cal)
+//   DayKey            "yyyy-MM-dd" day strings: string(date,cal) / date(key,cal) / adding(key,n,cal) / weekday(key,cal) / format(key,fmt,cal)
 //   DayStatus         logged | partial | skipped | missed | off | future
-//   SectionDef        {id (stable), title, hint, required}; SectionDef.validationError(list) -> String?
-//   DefaultSections   .all (v0.1 emoji headings, ids did/finished/started/pending/todo)
-//   DayEntry          {date, texts[sectionID], extras (unknown headings, preserved), isSkipped, skipReason, status}
+//   DayDocument       one day = ONE free-form markdown page:
+//                       {day, body, isSkipped, skipReason}  +  words, hasContent, status(minWords:)
+//                     `body` never contains the "# yyyy-MM-dd" title line (LogStore adds/strips it).
+//                     Logged rule: words >= minWords. partial = 1...minWords-1 words. 0 words -> .missed (= no log).
+//                     Task lines under a "Carried over from ..." heading are not words (a Carry over click alone never logs a day).
 // All dates are passed in with a Calendar; nothing here reads the clock.
 import Foundation
 
@@ -56,74 +58,36 @@ enum DayKey {
 }
 
 enum DayStatus: String, Codable, Equatable {
-    case logged   // file exists, every (required) section filled
-    case partial  // file exists, something empty
+    case logged   // words >= minWords
+    case partial  // 1...minWords-1 words
     case skipped  // skip marker file
-    case missed   // scheduled day, no file (today unlogged is also .missed; UI draws today's ring)
-    case off      // not a scheduled day, no file (or before the first ever entry)
+    case missed   // scheduled day, no log (today unlogged is also .missed; UI draws today's ring)
+    case off      // not a scheduled day, no log (or before the first ever entry)
     case future   // after today
 }
 
-struct SectionDef: Codable, Equatable, Identifiable {
-    var id: String
-    var title: String
-    var hint: String
-    var required: Bool
-    init(id: String = UUID().uuidString, title: String, hint: String = "", required: Bool = true) {
-        self.id = id; self.title = title; self.hint = hint; self.required = required
-    }
-    /// nil when valid: 1 to 10 sections, titles 1 to 40 chars, unique (case-insensitive), no leading '#', no newline.
-    static func validationError(_ list: [SectionDef]) -> String? {
-        if list.isEmpty || list.count > 10 { return "Use between 1 and 10 sections." }
-        var seen = Set<String>(), ids = Set<String>()
-        for s in list {
-            let t = s.title.dlTrimmed
-            if t.isEmpty || t.count > 40 { return "Section names must be 1 to 40 characters." }
-            if t.hasPrefix("#") { return "Section names cannot start with #." }
-            if t.contains("\n") { return "Section names must be one line." }
-            if !seen.insert(t.lowercased()).inserted { return "Section names must be unique." }
-            if !ids.insert(s.id).inserted { return "Duplicate section id." }
-        }
-        return nil
-    }
-}
+/// One day's page. `body` is plain markdown without the "# yyyy-MM-dd" title line.
+struct DayDocument: Equatable {
+    var day: String
+    var body: String
+    var isSkipped: Bool
+    var skipReason: String
 
-enum DefaultSections {
-    static let did = SectionDef(id: "did", title: "📝 What I did", hint: "Everything you worked on today…")
-    static let finished = SectionDef(id: "finished", title: "✅ Finished", hint: "What got done and closed…")
-    static let started = SectionDef(id: "started", title: "🚀 Started", hint: "What you kicked off…")
-    static let pending = SectionDef(id: "pending", title: "⏳ Pending / blocked", hint: "What's waiting on someone or something…")
-    static let todo = SectionDef(id: "todo", title: "📌 To do next", hint: "What needs doing tomorrow…")
-    static let all: [SectionDef] = [did, finished, started, pending, todo]
-}
-
-/// A heading in a file that matches no known section; kept verbatim on save.
-struct ExtraSection: Equatable { var title: String; var text: String }
-
-struct DayEntry: Equatable {
-    var date: String                       // "yyyy-MM-dd"
-    var texts: [String: String]            // sectionID -> text. A missing key = section absent from the file.
-    var extras: [ExtraSection] = []
-    var isSkipped = false
-    var skipReason = ""
-    /// Set by LogStore.load (logged/partial/skipped). Ignored by save (recomputed from content).
-    var status: DayStatus = .partial
-
-    init(date: String, texts: [String: String] = [:], extras: [ExtraSection] = [], isSkipped: Bool = false, skipReason: String = "") {
-        self.date = date; self.texts = texts; self.extras = extras
-        self.isSkipped = isSkipped; self.skipReason = skipReason
-        refreshStatus(sections: DefaultSections.all)
+    init(day: String, body: String = "", isSkipped: Bool = false, skipReason: String = "") {
+        self.day = day; self.body = body; self.isSkipped = isSkipped; self.skipReason = skipReason
     }
 
-    /// logged = has at least one section and every present section is non-empty (empty NON-required ones are tolerated).
-    func computeStatus(sections: [SectionDef]) -> DayStatus {
+    /// Words per the contract rule (headings, empty list/task markers, code-fence lines, images, HTML comments ignored;
+    /// task lines under a "Carried over from ..." heading never count, see MarkdownBody).
+    var words: Int { isSkipped ? 0 : MarkdownBody.words(in: body) }
+    /// True if the page holds anything beyond headings / empty markers (an image or a carried-over block alone counts).
+    var hasContent: Bool { !isSkipped && MarkdownBody.hasContent(body) }
+
+    /// .skipped / .logged (words >= minWords) / .partial (1...minWords-1) / .missed (nothing written: treat as "no log").
+    func status(minWords: Int) -> DayStatus {
         if isSkipped { return .skipped }
-        if texts.isEmpty && extras.isEmpty { return .partial }
-        for (id, t) in texts where t.dlTrimmed.isEmpty {
-            if sections.first(where: { $0.id == id })?.required ?? true { return .partial }
-        }
-        if extras.contains(where: { $0.text.dlTrimmed.isEmpty }) { return .partial }
-        return .logged
+        let w = words
+        if w >= max(1, minWords) { return .logged }
+        return w > 0 ? .partial : .missed
     }
-    mutating func refreshStatus(sections: [SectionDef]) { status = computeStatus(sections: sections) }
 }

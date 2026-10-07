@@ -1,57 +1,56 @@
-// MarkdownFormat.swift - parse/serialize one day file. Pure functions, no disk.
+// MarkdownFormat.swift - the day file <-> DayDocument. Pure functions, no disk.
 //
-// Format (v0.1 compatible):   # 2026-10-06\n\n## <title>\n<text>\n\n ...
-// Skip marker (no sections):  # 2026-10-06\n\n> Skipped: reason\n
-// Escaping: any user line matching ^\\*"## " gets one extra leading backslash on save and loses one on load,
-// so user text can never open a section, and a literal "\## " round-trips.
+// File:   "# YYYY-MM-DD\n\n<body>\n"   (the app writes the title; on load a leading "# <date>" line is stripped)
+// Skip:   "# YYYY-MM-DD\n\n> Skipped: reason\n"   or "> Skipped" (no reason). Recognised only when it is the ONLY content,
+//         and the text after "> Skipped" is empty or starts with ":" ("> Skipped the meeting" in a longer note is just text).
+// Old files (v0.1/v0.2 "## 📝 What I did" ... headings) load unchanged: they are simply markdown. The old "\## " escape
+// (a backslash before a line-start "## ") is undone on load, outside fenced code. Nothing is escaped on save.
+// BOM and CRLF are tolerated on load.
+//
+// API: MarkdownFormat.parse(day:raw:) -> DayDocument, serialize(day:body:) -> String, serializeSkip(day:reason:) -> String
 import Foundation
 
-struct ParsedDay: Equatable {
-    var sections: [(title: String, text: String)] = []
-    var isSkipped = false
-    var skipReason = ""
-    static func == (a: ParsedDay, b: ParsedDay) -> Bool {
-        a.isSkipped == b.isSkipped && a.skipReason == b.skipReason && a.sections.count == b.sections.count
-            && zip(a.sections, b.sections).allSatisfy { $0.title == $1.title && $0.text == $1.text }
-    }
-}
-
 enum MarkdownFormat {
-    private static func needsEscape(_ line: String) -> Bool {
-        let rest = line.drop(while: { $0 == "\\" })
-        return rest.hasPrefix("## ")
-    }
-    static func escape(_ text: String) -> String {
-        text.components(separatedBy: "\n").map { needsEscape($0) ? "\\" + $0 : $0 }.joined(separator: "\n")
-    }
-    static func unescape(_ text: String) -> String {
-        text.components(separatedBy: "\n").map { needsEscape($0) && $0.hasPrefix("\\") ? String($0.dropFirst()) : $0 }.joined(separator: "\n")
+    private static func isDateTitle(_ line: String) -> Bool {
+        let t = line.dlTrimmed
+        return t.hasPrefix("# ") && DayKey.isWellFormed(String(t.dropFirst(2)).dlTrimmed)
     }
 
-    static func parse(_ raw: String) -> ParsedDay {
-        let text = raw.replacingOccurrences(of: "\r\n", with: "\n")
-        var out = ParsedDay()
-        var cur: String?, buf = [String](), pre = [String]()
-        func flush() { if let c = cur { out.sections.append((c, unescape(buf.joined(separator: "\n")).dlTrimmed)) } }
+    /// "> Skipped" / "> Skipped: reason" as the whole body -> reason ("" when none); otherwise nil.
+    static func skipReason(inBody body: String) -> String? {
+        let t = body.dlTrimmed
+        guard t.hasPrefix("> Skipped"), !t.contains("\n") else { return nil }
+        var rest = String(t.dropFirst("> Skipped".count))
+        if rest.isEmpty { return "" }
+        guard rest.hasPrefix(":") else { return nil }
+        rest.removeFirst()
+        return rest.dlTrimmed
+    }
+
+    private static func unescapeLegacy(_ text: String) -> String {
+        var out = [String](), fence: (ch: Character, len: Int)?
         for line in text.components(separatedBy: "\n") {
-            if line.hasPrefix("## ") { flush(); buf = []; cur = String(line.dropFirst(3)).dlTrimmed }
-            else if cur == nil { pre.append(line) } else { buf.append(line) }
+            if let f = fence { if MarkdownBody.isClosingFence(line, f) { fence = nil }; out.append(line); continue }
+            if let f = MarkdownBody.openingFence(line) { fence = f; out.append(line); continue }
+            if line.hasPrefix("\\"), line.drop(while: { $0 == "\\" }).hasPrefix("## ") { out.append(String(line.dropFirst())) }
+            else { out.append(line) }
         }
-        flush()
-        if out.sections.isEmpty, let m = pre.first(where: { $0.dlTrimmed.hasPrefix("> Skipped") }) {
-            out.isSkipped = true
-            var r = String(m.dlTrimmed.dropFirst("> Skipped".count))
-            if r.hasPrefix(":") { r.removeFirst() }
-            out.skipReason = r.dlTrimmed
-        }
-        return out
+        return out.joined(separator: "\n")
     }
 
-    static func serialize(day: String, sections: [(title: String, text: String)]) -> String {
-        "# \(day)\n\n" + sections.map { s in
-            let title = s.title.replacingOccurrences(of: "\n", with: " ")
-            return "## \(title)\n\(escape(s.text.dlTrimmed))\n\n"
-        }.joined()
+    static func parse(day: String, raw: String) -> DayDocument {
+        var text = raw
+        if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
+        var lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        while let f = lines.first, f.dlTrimmed.isEmpty { lines.removeFirst() }
+        if let f = lines.first, isDateTitle(f) { lines.removeFirst() }
+        let body = MarkdownBody.trimBody(lines.joined(separator: "\n"))
+        if let reason = skipReason(inBody: body) { return DayDocument(day: day, body: "", isSkipped: true, skipReason: reason) }
+        return DayDocument(day: day, body: MarkdownBody.trimBody(unescapeLegacy(body)))
+    }
+
+    static func serialize(day: String, body: String) -> String {
+        "# \(day)\n\n" + MarkdownBody.trimBody(body) + "\n"
     }
     static func serializeSkip(day: String, reason: String) -> String {
         let r = reason.replacingOccurrences(of: "\n", with: " ").dlTrimmed

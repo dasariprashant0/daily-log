@@ -1,11 +1,17 @@
 // Settings.swift - persisted preferences.
 //
 // API:
-//   Settings                 Codable struct; Settings() = defaults (Strict, 16:55, Mon-Fri, 15 min snooze, default sections)
+//   Settings                 Codable struct; Settings() = defaults (Strict, 16:55, Mon-Fri, 15 min snooze, 20 words, default template)
 //   Settings.load(from:)     / save(to:)   via any KeyValueStore (UserDefaults conforms; MemoryStore for tests)
 //   Settings.normalized()    clamps invalid values (call after editing; load already does)
-//   Settings.isWorkday(weekday:) / defaultFolder
+//   Settings.isWorkday(weekday:) / defaultFolder / defaultTemplate / defaultCarryOverHeadings / minWordsRange
 //   ReminderMode             .strict | .gentle
+// v0.3 fields (replace the v0.2 `sections` array):
+//   template            markdown pre-filled into a NEW day in the editor only (never written until the user edits)
+//   carryOverHeadings   headings whose lines are carried to the next day (matched by MarkdownBody.normalizeHeading)
+//   minWords            logged rule: words(body) >= minWords (1...500, default 20); carried-over task lines do not count
+// Old settings JSON decodes tolerantly: an old `sections` array with no `template` becomes "## <title>" blocks;
+// `carryOverSectionID` and other unknown keys are ignored.
 // Weekdays use Calendar numbering: 1 = Sunday ... 7 = Saturday.
 import Foundation
 
@@ -25,9 +31,13 @@ final class MemoryStore: KeyValueStore {
 }
 
 struct Settings: Codable, Equatable {
-    static let storageKey = "dailylog.settings.v2"
+    static let storageKey = "dailylog.settings.v2"   // unchanged on purpose: v0.2 settings are found and migrated
     static let snoozeChoices = [5, 10, 15, 20, 30]
-    static var defaultFolder: URL { URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("daily-log") }
+    static let minWordsRange = 1...500
+    static let defaultMinWords = 20
+    static let defaultTemplate = "## What I did\n\n## Finished\n\n## Started\n\n## Pending / blocked\n\n## To do next"
+    static let defaultCarryOverHeadings = ["To do next", "Pending / blocked"]
+    static var defaultFolder: URL { URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Gloamlog") }
 
     var reminderMinutes = 16 * 60 + 55            // minutes after midnight, local time
     var weekdays: Set<Int> = [2, 3, 4, 5, 6]      // Mon-Fri
@@ -35,15 +45,20 @@ struct Settings: Codable, Equatable {
     var snoozeMinutes = 15
     var storageFolder: URL = Settings.defaultFolder
     var launchAtLogin = true
-    var sections: [SectionDef] = DefaultSections.all
+    var template: String = Settings.defaultTemplate
+    var carryOverHeadings: [String] = Settings.defaultCarryOverHeadings
+    var minWords = Settings.defaultMinWords
     var onboarded = false
-    var carryOverSectionID = "pending"            // where "Carry over" lands
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case reminderMinutes, weekdays, mode, snoozeMinutes, storageFolder, launchAtLogin, sections, onboarded, carryOverSectionID
+        case reminderMinutes, weekdays, mode, snoozeMinutes, storageFolder, launchAtLogin
+        case template, carryOverHeadings, minWords, onboarded
     }
+    private enum LegacyKeys: String, CodingKey { case sections }
+    private struct LegacySection: Decodable { var title: String }
+
     // Tolerant decoding: keys missing from older/newer saves fall back to defaults.
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -53,9 +68,16 @@ struct Settings: Codable, Equatable {
         snoozeMinutes = try c.decodeIfPresent(Int.self, forKey: .snoozeMinutes) ?? snoozeMinutes
         storageFolder = try c.decodeIfPresent(URL.self, forKey: .storageFolder) ?? storageFolder
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? launchAtLogin
-        sections = try c.decodeIfPresent([SectionDef].self, forKey: .sections) ?? sections
+        carryOverHeadings = try c.decodeIfPresent([String].self, forKey: .carryOverHeadings) ?? carryOverHeadings
+        minWords = try c.decodeIfPresent(Int.self, forKey: .minWords) ?? minWords
         onboarded = try c.decodeIfPresent(Bool.self, forKey: .onboarded) ?? onboarded
-        carryOverSectionID = try c.decodeIfPresent(String.self, forKey: .carryOverSectionID) ?? carryOverSectionID
+        if let t = try c.decodeIfPresent(String.self, forKey: .template) {
+            template = t
+        } else if let lc = try? d.container(keyedBy: LegacyKeys.self),
+                  let old = try? lc.decodeIfPresent([LegacySection].self, forKey: .sections) {
+            let titles = old.map { $0.title.dlTrimmed }.filter { !$0.isEmpty }
+            if !titles.isEmpty { template = titles.map { "## \($0)" }.joined(separator: "\n\n") }
+        }
     }
 
     func isWorkday(weekday: Int) -> Bool { weekdays.contains(weekday) }
@@ -66,7 +88,8 @@ struct Settings: Codable, Equatable {
         s.weekdays = weekdays.filter { (1...7).contains($0) }
         if s.weekdays.isEmpty { s.weekdays = [2, 3, 4, 5, 6] }
         if !Settings.snoozeChoices.contains(snoozeMinutes) { s.snoozeMinutes = 15 }
-        if SectionDef.validationError(sections) != nil { s.sections = DefaultSections.all }
+        s.minWords = min(max(minWords, Settings.minWordsRange.lowerBound), Settings.minWordsRange.upperBound)
+        s.carryOverHeadings = carryOverHeadings.map { $0.dlTrimmed }.filter { !$0.isEmpty }
         return s
     }
 

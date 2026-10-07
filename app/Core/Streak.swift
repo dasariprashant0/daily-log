@@ -1,4 +1,5 @@
-// Streak.swift - day status resolution, streak and 12-week heatmap. Pure; input is LogStore.fileStates().
+// Streak.swift - day status resolution, streak and 12-week heatmap. Pure; input is LogStore.fileStates(minWords:)
+// (logged = words >= minWords, partial = 1...minWords-1 words, skipped = marker file; empty pages are absent).
 //
 // API:
 //   Status.resolve(day:, fileState:, now:, calendar:, weekdays:, since:) -> DayStatus

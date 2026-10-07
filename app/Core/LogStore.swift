@@ -1,37 +1,110 @@
-// LogStore.swift - reads/writes the markdown day files in the storage folder.
+// LogStore.swift - reads/writes the markdown day files in the storage folder (one free-form page per day).
 //
-// API (all throw LogError; nothing touches the clock):
-//   LogStore(dir:, sections:)         `sections` is a var: set it when Settings.sections change
+// API (all throw LogError unless noted):
+//   LogStore(dir:, backupDir: nil, minBackupInterval: 0, clock: Date.init)
+//                                     backupDir = where safety copies go (nil = no backups). The UI passes
+//                                     ~/Library/Application Support/Gloamlog/backups so they never sync with the logs.
 //   ensureFolder()                    create the folder (onboarding / "Choose folder")
 //   checkFolder()                     .folderMissing / .folderNotWritable
-//   listDays() -> [String]            day keys that have a file, newest first
-//   load(day) -> DayEntry?            nil = no file. Unknown headings land in entry.extras
-//   save(entry)                       atomic. Writes a section for every key in entry.texts (+ extras).
-//                                     Replaces a skip marker ("Write a log anyway").
-//   skip(day, reason)                 writes `> Skipped: reason`; throws .hasContent if the day has log text
-//   skipRange(from:to:reason:weekdays:calendar:) -> [String]   one file per scheduled day; days with content are left alone
+//   listDays() -> [String]            day keys that have a file, newest first (the assets/ folder, a backups folder inside
+//                                     the storage folder and foreign files are ignored)
+//   load(day) -> DayDocument?         nil = no file. v0.1/v0.2 files load as plain markdown (see MarkdownFormat)
+//   save(day:body:) -> SaveOutcome    atomic; writes "# day\n\n<body>\n". Replaces a skip marker ("write a log anyway").
+//                                     A whitespace-only body deletes an existing log file instead (an emptied page is "no log")
+//                                     and never touches a skip marker. Identical content is not rewritten. The UI must only
+//                                     call this after a real edit. @discardableResult: see Backups.
+//   skip(day, reason:)                writes "> Skipped: reason"; throws .hasContent if the day has writing (headings alone are overwritten)
+//   skipRange(from:to:reason:weekdays:calendar:) -> [String]   one file per scheduled day; days with writing are left alone
 //   unskip(day) -> Bool               deletes the marker only
-//   fileStates() -> [String: DayStatus]   logged/partial/skipped per file (input for Streak/Heatmap/WeeklyReview)
-//   search(query, sectionID:) -> [SearchHit]   see Search.swift
+//   fileStates(minWords:) -> [String: DayStatus]   logged/partial/skipped per file; days with 0 words are omitted
+//                                     (input for Status/Streak/Heatmap/WeeklyReview)
+//   documents(from:to:) -> [String: DayDocument] / allDocuments()
+//   search(query, heading:) -> [SearchHit]         see Search.swift
 //   folderSummary() -> FolderSummary  counts for Settings > Storage
+//   assets -> AssetStore              images for this folder
+//
+// Backups (safety net so autosave can never destroy a day of writing; only when backupDir is set):
+//   Before save() overwrites OR deletes an existing day file, the old file is copied byte-for-byte to
+//   <backupDir>/<yyyy-MM-dd>/<yyyyMMdd-HHmmss>.md (UTC time stamp, atomic write) and only the newest 10 per day are kept
+//   (LogStore.maxBackupsPerDay). No backup when: the new content equals the file, the file is a skip marker, or the file
+//   has nothing but its title. Names always increase (a same-second save or a clock set back still sorts newest), so
+//   pruning never drops the latest copy. minBackupInterval > 0 (seconds) makes overwrites skip the copy while the
+//   newest backup is younger than that, so the 10 slots span longer in a typing session (deletes/restores always copy).
+//   A failing backup NEVER fails the save: the write/delete still happens and the problem is reported twice,
+//     save(...) -> SaveOutcome{backedUp, backupWarning}   for that call, and
+//     lastBackupWarning: String?                          latest backup/prune problem, nil after the next good backup.
+//   Backups are never listed by listDays/fileStates/search/documents/folderSummary.
+//   listBackups(day:) -> [BackupInfo{date, url, words}]   newest first; [] without backupDir (does not throw)
+//   restoreBackup(day:backup:) -> DayDocument             first backs up the current file (throws .backupFailed if that
+//                                                         is impossible and nothing was changed), then writes the old copy back.
+//                                                         .backupsDisabled without backupDir; .io for an unknown/forged backup.
 import Foundation
 
 enum LogError: Error, Equatable {
     case folderMissing(String)
     case folderNotWritable(String)
     case badDay(String)
-    case hasContent(String)   // refusing to overwrite a day that has log text
+    case hasContent(String)          // refusing to overwrite a day that has writing
+    case unsupportedAsset(String)    // extension not in png/jpg/jpeg/gif/webp
+    case assetTooLarge(Int)          // bytes; max is AssetStore.maxBytes (20 MB)
+    case emptyAsset
+    case badPath(String)             // e.g. assets/ is a symlink leaving the storage folder
+    case backupsDisabled             // restoreBackup on a store created without backupDir
+    case backupFailed(String)        // restoreBackup could not make its safety copy of the current page (nothing changed)
     case io(String)
 }
 
 struct FolderSummary: Equatable { var logs = 0, skipped = 0, unrecognized = 0 }
 
+/// One safety copy of a day file. `date` is the (UTC) time stamp in its file name; `words` counts the saved page.
+struct BackupInfo: Equatable {
+    var date: Date
+    var url: URL
+    var words: Int
+}
+
+/// What save() did besides writing: whether the old file was copied, and any non-fatal backup problem to show the user.
+struct SaveOutcome: Equatable {
+    var backedUp = false
+    var backupWarning: String?
+}
+
+/// Backup file names: "yyyyMMdd-HHmmss.md" in UTC, so DST and time zones cannot reorder or duplicate them.
+private enum BackupName {
+    static let ext = ".md"
+    private static var calendar: Calendar {
+        var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "GMT")!; return c
+    }
+    static func stem(_ d: Date) -> String {
+        let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: d)
+        return String(format: "%04ld%02ld%02ld-%02ld%02ld%02ld", c.year ?? 0, c.month ?? 0, c.day ?? 0, c.hour ?? 0, c.minute ?? 0, c.second ?? 0)
+    }
+    static func date(fromFile name: String) -> Date? {
+        guard name.hasSuffix(ext) else { return nil }
+        let u = Array(name.dropLast(ext.count).utf8)
+        guard u.count == 15, u[8] == 45, u.enumerated().allSatisfy({ $0.offset == 8 || ($0.element >= 48 && $0.element <= 57) }) else { return nil }
+        func n(_ a: Int, _ b: Int) -> Int { Int(String(decoding: u[a..<b], as: UTF8.self)) ?? 0 }
+        let parts = DateComponents(year: n(0, 4), month: n(4, 6), day: n(6, 8), hour: n(9, 11), minute: n(11, 13), second: n(13, 15))
+        guard let d = calendar.date(from: parts), stem(d) == String(decoding: u, as: UTF8.self) else { return nil }
+        return d
+    }
+}
+
 final class LogStore {
+    static let maxBackupsPerDay = 10
+
     let dir: URL
-    var sections: [SectionDef]
+    let backupDir: URL?
+    var minBackupInterval: TimeInterval
+    private(set) var lastBackupWarning: String?
+    private let clock: () -> Date
     private let fm = FileManager.default
 
-    init(dir: URL, sections: [SectionDef] = DefaultSections.all) { self.dir = dir; self.sections = sections }
+    init(dir: URL, backupDir: URL? = nil, minBackupInterval: TimeInterval = 0, clock: @escaping () -> Date = { Date() }) {
+        self.dir = dir; self.backupDir = backupDir; self.minBackupInterval = minBackupInterval; self.clock = clock
+    }
+
+    var assets: AssetStore { AssetStore(dir: dir) }
 
     // MARK: folder
     func ensureFolder() throws {
@@ -54,50 +127,46 @@ final class LogStore {
         let names: [String]
         do { names = try fm.contentsOfDirectory(atPath: dir.path) } catch { throw LogError.io(error.localizedDescription) }
         var days = [String](), other = 0
-        for n in names where !n.hasPrefix(".") {
+        var reserved: Set<String> = [AssetStore.folderName]
+        if let b = backupDir, b.deletingLastPathComponent().standardizedFileURL.path == dir.standardizedFileURL.path {
+            reserved.insert(b.lastPathComponent)   // a backups folder inside the storage folder is not "unrecognised"
+        }
+        for n in names where !n.hasPrefix(".") && !reserved.contains(n) {
             if n.hasSuffix(".md"), DayKey.isWellFormed(String(n.dropLast(3))) { days.append(String(n.dropLast(3))) } else { other += 1 }
         }
         return (days.sorted(by: >), other)
     }
     func listDays() throws -> [String] { try dayFiles().days }
 
-    func load(_ day: String) throws -> DayEntry? {
+    func load(_ day: String) throws -> DayDocument? {
         try validate(day)
         try checkFolder(writable: false)
         guard fm.fileExists(atPath: url(for: day).path) else { return nil }
         let text: String
         do { text = try String(contentsOf: url(for: day), encoding: .utf8) } catch { throw LogError.io(error.localizedDescription) }
-        return entry(day: day, parsed: MarkdownFormat.parse(text))
+        return MarkdownFormat.parse(day: day, raw: text)
     }
 
-    private func entry(day: String, parsed: ParsedDay) -> DayEntry {
-        var e = DayEntry(date: day)
-        e.isSkipped = parsed.isSkipped; e.skipReason = parsed.skipReason
-        for (title, text) in parsed.sections {
-            let def = sections.first { $0.title == title } ?? sections.first { $0.title.lowercased() == title.lowercased() }
-            if let d = def, e.texts[d.id] == nil { e.texts[d.id] = text } else { e.extras.append(ExtraSection(title: title, text: text)) }
-        }
-        e.refreshStatus(sections: sections)
-        if !parsed.isSkipped && parsed.sections.isEmpty { e.status = .partial }
-        return e
-    }
-
-    func fileStates() throws -> [String: DayStatus] {
+    func fileStates(minWords: Int) throws -> [String: DayStatus] {
         var out = [String: DayStatus]()
-        for d in try listDays() { if let e = try? load(d) { out[d] = e.status } }
+        for d in try listDays() {
+            guard let doc = try? load(d) else { continue }
+            let s = doc.status(minWords: minWords)
+            if s != .missed { out[d] = s }
+        }
         return out
     }
-    func entries(from: String, to: String) throws -> [String: DayEntry] {
-        var out = [String: DayEntry]()
+    func documents(from: String, to: String) throws -> [String: DayDocument] {
+        var out = [String: DayDocument]()
         for d in try listDays() where d >= from && d <= to { if let e = try load(d) { out[d] = e } }
         return out
     }
-    func allEntries() throws -> [DayEntry] { try listDays().compactMap { try load($0) } }
+    func allDocuments() throws -> [DayDocument] { try listDays().compactMap { try load($0) } }
 
     func folderSummary() throws -> FolderSummary {
         var s = FolderSummary()
         let f = try dayFiles(); s.unrecognized = f.other
-        for d in f.days { if let e = try load(d) { if e.isSkipped { s.skipped += 1 } else { s.logs += 1 } } }
+        for d in f.days { if let e = try load(d) { if e.isSkipped { s.skipped += 1 } else if e.hasContent { s.logs += 1 } } }
         return s
     }
 
@@ -113,17 +182,120 @@ final class LogStore {
         }
     }
 
-    func save(_ e: DayEntry) throws {
-        try validate(e.date)
-        var parts = [(title: String, text: String)]()
-        for s in sections { if let t = e.texts[s.id] { parts.append((s.title, t)) } }
-        parts += e.extras.map { ($0.title, $0.text) }
-        try write(MarkdownFormat.serialize(day: e.date, sections: parts), day: e.date)
+    @discardableResult
+    func save(day: String, body: String) throws -> SaveOutcome {
+        try validate(day)
+        try checkFolder()
+        let file = url(for: day)
+        let exists = fm.fileExists(atPath: file.path)
+        let oldData: Data? = exists ? (try? Data(contentsOf: file)) : nil
+        let oldText = oldData.flatMap { String(data: $0, encoding: .utf8) }
+        var out = SaveOutcome()
+        if MarkdownBody.trimBody(body).isEmpty {
+            guard exists else { return out }
+            if let t = oldText, MarkdownFormat.parse(day: day, raw: t).isSkipped { return out }
+            note(backUpCurrent(day: day, data: oldData, text: oldText, throttled: false), in: &out)
+            do { try fm.removeItem(at: file) } catch { throw LogError.io(error.localizedDescription) }
+            return out
+        }
+        let text = MarkdownFormat.serialize(day: day, body: body)
+        if oldText == text { return out }   // identical: nothing to write, nothing to back up
+        if exists { note(backUpCurrent(day: day, data: oldData, text: oldText, throttled: true), in: &out) }
+        try write(text, day: day)
+        return out
+    }
+
+    // MARK: backups
+    private enum BackupResult: Equatable { case notNeeded, saved(String?), failed(String) }
+
+    private func note(_ r: BackupResult, in out: inout SaveOutcome) {
+        switch r {
+        case .notNeeded: break
+        case .saved(let warning): out.backedUp = true; out.backupWarning = warning; lastBackupWarning = warning
+        case .failed(let message): out.backupWarning = message; lastBackupWarning = message
+        }
+    }
+
+    private func backupDayDir(_ day: String) -> URL? {
+        guard let b = backupDir, DayKey.isWellFormed(day) else { return nil }
+        return b.appendingPathComponent(day, isDirectory: true)
+    }
+    /// Valid backup file names in a day folder, newest first (names sort chronologically).
+    private func backupNames(in d: URL) -> [String] {
+        ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).filter { BackupName.date(fromFile: $0) != nil }.sorted(by: >)
+    }
+
+    /// Copies the current day file (`data`, already read by the caller) into the backup folder, then prunes. Never throws.
+    private func backUpCurrent(day: String, data: Data?, text: String?, throttled: Bool) -> BackupResult {
+        guard let dayDir = backupDayDir(day) else { return .notNeeded }
+        if let t = text {
+            let page = MarkdownFormat.parse(day: day, raw: t)
+            if page.isSkipped || MarkdownBody.trimBody(page.body).isEmpty { return .notNeeded }   // nothing worth keeping
+        }
+        guard let bytes = data else { return .failed("Could not read \(day).md to back it up.") }
+        do {
+            try fm.createDirectory(at: dayDir, withIntermediateDirectories: true)
+            var stamp = clock()
+            if let newest = backupNames(in: dayDir).first.flatMap({ BackupName.date(fromFile: $0) }) {
+                if throttled, minBackupInterval > 0, stamp.timeIntervalSince(newest) < minBackupInterval { return .notNeeded }
+                if BackupName.stem(stamp) <= BackupName.stem(newest) { stamp = newest.addingTimeInterval(1) }   // keep names increasing
+            }
+            try bytes.write(to: dayDir.appendingPathComponent(BackupName.stem(stamp) + BackupName.ext), options: .atomic)
+        } catch {
+            return .failed("Could not write a backup of \(day).md: \(error.localizedDescription)")
+        }
+        var warning: String?
+        for old in backupNames(in: dayDir).dropFirst(Self.maxBackupsPerDay) {
+            do { try fm.removeItem(at: dayDir.appendingPathComponent(old)) }
+            catch { warning = "Could not remove old backups of \(day).md: \(error.localizedDescription)" }
+        }
+        return .saved(warning)
+    }
+
+    /// Safety copies of one day, newest first. [] when backups are off, the day is malformed or nothing was saved yet.
+    func listBackups(day: String) -> [BackupInfo] {
+        guard let d = backupDayDir(day) else { return [] }
+        return backupNames(in: d).compactMap { name in
+            guard let date = BackupName.date(fromFile: name) else { return nil }
+            let u = d.appendingPathComponent(name)
+            let words = (try? String(contentsOf: u, encoding: .utf8)).map { MarkdownFormat.parse(day: day, raw: $0).words } ?? 0
+            return BackupInfo(date: date, url: u, words: words)
+        }
+    }
+
+    /// Writes a backup back as the day file. The current file is backed up first (so a restore can itself be undone);
+    /// if that is impossible nothing is changed and .backupFailed is thrown. Only the file NAME of `backup.url` is used,
+    /// resolved inside this store's backup folder for `day`.
+    @discardableResult
+    func restoreBackup(day: String, backup: BackupInfo) throws -> DayDocument {
+        try validate(day)
+        guard backupDir != nil, let dayDir = backupDayDir(day) else { throw LogError.backupsDisabled }
+        let name = backup.url.lastPathComponent
+        guard BackupName.date(fromFile: name) != nil else { throw LogError.io("Not a backup file: \(name)") }
+        let text: String
+        do { text = try String(contentsOf: dayDir.appendingPathComponent(name), encoding: .utf8) }
+        catch { throw LogError.io("Backup \(name) could not be read.") }
+        try checkFolder()
+        let file = url(for: day)
+        let exists = fm.fileExists(atPath: file.path)
+        let curData: Data? = exists ? (try? Data(contentsOf: file)) : nil
+        let curText = curData.flatMap { String(data: $0, encoding: .utf8) }
+        if curText != text {
+            if exists {
+                switch backUpCurrent(day: day, data: curData, text: curText, throttled: false) {
+                case .failed(let message): lastBackupWarning = message; throw LogError.backupFailed(message)
+                case .saved(let warning): lastBackupWarning = warning
+                case .notNeeded: break
+                }
+            }
+            try write(text, day: day)
+        }
+        return MarkdownFormat.parse(day: day, raw: text)
     }
 
     func skip(_ day: String, reason: String = "") throws {
         try validate(day)
-        if let e = try load(day), !e.isSkipped, !(e.texts.isEmpty && e.extras.isEmpty) { throw LogError.hasContent(day) }
+        if let e = try load(day), !e.isSkipped, e.hasContent { throw LogError.hasContent(day) }
         try write(MarkdownFormat.serializeSkip(day: day, reason: reason), day: day)
     }
 
@@ -151,9 +323,9 @@ final class LogStore {
         return true
     }
 
-    func search(_ query: String, sectionID: String? = nil) throws -> [SearchHit] {
+    func search(_ query: String, heading: String? = nil) throws -> [SearchHit] {
         var hits = [SearchHit]()
-        for d in try listDays() { if let e = try load(d) { hits += Search.hits(in: e, query: query, sections: sections, sectionID: sectionID) } }
+        for d in try listDays() { if let e = try load(d) { hits += Search.hits(in: e, query: query, heading: heading) } }
         return hits
     }
 }
