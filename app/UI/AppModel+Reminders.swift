@@ -7,6 +7,7 @@ extension AppModel {
         guard live else { return }
         Notifier.shared.setup(model: self)
         Notifier.shared.refreshState { [weak self] s in self?.notifState = s }
+        activate(editor, replacing: nil, focus: sheet == nil)          // creates the editor host and loads today's page
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.tick() }
         timer?.tolerance = 5
         let nc = NotificationCenter.default, ws = NSWorkspace.shared.notificationCenter
@@ -14,10 +15,12 @@ extension AppModel {
             nc.addObserver(forName: n, object: nil, queue: .main) { [weak self] _ in self?.refreshClock() }
         }
         nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.reload(); Notifier.shared.refreshState { s in self?.notifState = s }
+            self?.reload(); self?.editor?.checkExternalChange(); self?.editor?.retryIfNeeded()
+            Notifier.shared.refreshState { s in self?.notifState = s }
         }
         nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.flushEditor() }
         nc.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] _ in self?.flushEditor() }
+        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.flushEditor() }
         ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.screensAsleep = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 15) { self?.tick() }   // let the unlock settle
@@ -29,11 +32,14 @@ extension AppModel {
         tick()
     }
 
-    var mainWindow: NSWindow? { NSApp.windows.first { $0.title == "Daily Log" && !($0 is NSPanel) } }
+    var mainWindow: NSWindow? { NSApp.windows.first { $0.title == "Gloamlog" && !($0 is NSPanel) } }
     var windowVisible: Bool { if let w = mainWindow { return w.isVisible && !w.isMiniaturized }; return false }
 
     func tick() {
         refreshClock()
+        editor?.checkExternalChange()
+        editor?.retryIfNeeded()
+        retryOrphans()
         guard !screensAsleep else { return }
         let (action, next) = ReminderPlanner.decide(now: now, calendar: cal, settings: settings, todayStatus: todayStatus,
                                                     state: planner, windowVisible: windowVisible)
@@ -48,8 +54,7 @@ extension AppModel {
         case .bringToFront(let notify):
             if notify { postReminder() }
             showMainWindow(activate: true)
-            select(.day(today))
-            if editor.day == today { focusFirstEmpty() }
+            openDay(today, focus: true)
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { NSApp.requestUserAttention(.informationalRequest) }
         case .reopen:
             showMainWindow(activate: false)     // orderFrontRegardless, never steals keystrokes
@@ -60,10 +65,10 @@ extension AppModel {
         let mins = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
         if mins - settings.reminderMinutes > 5 {
             Notifier.shared.post(title: "Today isn't logged yet",
-                                 body: "It's \(Fmt.time(now)). Open Daily Log whenever you're ready.", snoozeMinutes: settings.snoozeMinutes)
+                                 body: "It's \(Fmt.time(now)). Open Gloamlog whenever you're ready.", snoozeMinutes: settings.snoozeMinutes)
         } else {
             Notifier.shared.post(title: "Time to write up your day",
-                                 body: "It takes a few minutes. Daily Log is ready when you are.", snoozeMinutes: settings.snoozeMinutes)
+                                 body: "It takes a few minutes. Gloamlog is ready when you are.", snoozeMinutes: settings.snoozeMinutes)
         }
     }
 

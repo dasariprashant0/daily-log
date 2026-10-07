@@ -1,4 +1,5 @@
-// Sidebar.swift - search field, Today / This week, month-grouped history, streak + heatmap footer.
+// Sidebar.swift - search field, Today / This week, month-grouped history, and a one-line streak. The heatmap lives in the
+// streak popover on the page header, not here.
 import SwiftUI
 
 struct SidebarView: View {
@@ -15,7 +16,7 @@ struct SidebarView: View {
                         HistoryList(model: model)
                     }.padding(.horizontal, Theme.s2).padding(.bottom, Theme.s3)
                 }
-                if geo.size.height >= 560 { SidebarFooter(model: model) }
+                if geo.size.height >= 480 { SidebarFooter(model: model) }
             }
         }
         .background(Theme.sidebar.ignoresSafeArea())
@@ -77,17 +78,17 @@ struct TodayRow: View {
     @ObservedObject var model: AppModel
     var body: some View {
         let st = model.status(of: model.today)
-        let draft = model.draftDays.contains(model.today)
         let (sym, col): (String, Color) = {
             switch st {
             case .logged: return ("checkmark.circle.fill", Theme.accent)
             case .skipped: return ("minus.circle", Theme.textTertiary)
             case .off: return ("moon.zzz", Theme.textTertiary)
-            default: return (draft ? "circle.lefthalf.filled" : "circle", Theme.textSecondary)
+            case .partial: return ("circle.lefthalf.filled", Theme.textSecondary)
+            default: return ("circle", Theme.textSecondary)
             }
         }()
-        let state = st == .logged ? "logged" : st == .skipped ? "skipped" : st == .off ? "not a workday" : (draft ? "not logged, draft saved" : "not logged")
-        SidebarRow(symbol: sym, color: col, title: "Today", trailing: draft && st != .logged ? "draft" : nil, weight: .semibold,
+        let state = st == .logged ? "logged" : st == .skipped ? "skipped" : st == .off ? "not a workday" : st == .partial ? "started, not logged yet" : "not logged"
+        SidebarRow(symbol: sym, color: col, title: "Today", weight: .semibold,
                    selected: model.selection == .day(model.today), label: "Today, \(state)") { model.openToday() }
     }
 }
@@ -145,29 +146,26 @@ struct HistoryRow: View {
     let day: String
     var body: some View {
         let st = model.states[day]
-        let draft = model.draftDays.contains(day) && st != .logged
         let (sym, col, word): (String, Color, String) = {
             switch st {
-            case .some(.logged): return (draft ? "pencil.circle" : "checkmark.circle.fill", Theme.accent, "logged")
+            case .some(.logged): return ("checkmark.circle.fill", Theme.accent, "logged")
             case .some(.skipped): return ("minus.circle", Theme.textTertiary, "skipped")
-            case .some(.partial): return ("circle.lefthalf.filled", Theme.textSecondary, "partly logged")
-            default: return ("pencil.circle", Theme.textSecondary, "draft")
+            default: return ("circle.lefthalf.filled", Theme.textSecondary, "started, not logged")
             }
         }()
         let reason = model.skipReasons[day] ?? ""
         SidebarRow(symbol: sym, color: col, title: model.shortDate(day),
-                   trailing: draft ? "draft" : (st == .skipped ? "skipped" : nil),
+                   trailing: st == .skipped ? "skipped" : nil,
                    selected: model.selection == .day(day),
-                   label: "\(model.spokenDate(day)), \(word)\(st == .skipped && !reason.isEmpty ? ", \(reason)" : "")\(draft && st != nil ? ", unsaved edits" : "")") {
+                   label: "\(model.spokenDate(day)), \(word)\(st == .skipped && !reason.isEmpty ? ", \(reason)" : "")") {
             model.select(.day(day))
         }
         .contextMenu {
             Button("Show in Finder") { model.reveal([model.store.url(for: day)]) }
-            if st == .some(.logged) || st == .some(.partial) {
+            if st != .some(.skipped) {
                 Button("Copy as Markdown") {
-                    if let e = (try? model.store.load(day)) ?? nil {
-                        let md = MarkdownFormat.serialize(day: day, sections: model.settings.sections.compactMap { s in e.texts[s.id].map { (s.title, $0) } } + e.extras.map { ($0.title, $0.text) })
-                        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(md, forType: .string)
+                    if let doc = (try? model.store.load(day)) ?? nil {
+                        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(doc.body, forType: .string)
                     }
                 }
             }
@@ -176,15 +174,13 @@ struct HistoryRow: View {
     }
 }
 
+/// One quiet line. The 12-week heatmap is behind the streak chip on the page header.
 struct SidebarFooter: View {
     @ObservedObject var model: AppModel
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.s2) {
-            StreakLine(model: model)
-            HeatmapView(model: model, cell: 11, gap: 3)
-        }
-        .padding(Theme.s4).frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(Rectangle().fill(Theme.border).frame(height: 1), alignment: .top)
+        StreakLine(model: model)
+            .padding(.horizontal, Theme.s4).frame(height: 40).frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(Rectangle().fill(Theme.border).frame(height: 1), alignment: .top)
     }
 }
 

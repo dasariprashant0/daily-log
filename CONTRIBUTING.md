@@ -1,6 +1,6 @@
-# Contributing to Daily Log
+# Contributing to Gloamlog
 
-Thanks for helping. Daily Log is a small, local-only macOS app, and the aim is to keep it that way.
+Thanks for helping. Gloamlog is a small, local-only macOS app, and the aim is to keep it that way.
 
 ## Build
 
@@ -10,7 +10,7 @@ Needs macOS 13+ and Xcode Command Line Tools (`xcode-select --install`).
 bash app/build.sh
 ```
 
-This produces `app/Daily Log.app` and `app/DailyLog.zip`.
+This produces `app/Gloamlog.app` and `app/Gloamlog.zip`.
 
 ## Test
 
@@ -30,7 +30,7 @@ See [docs/FILE_STRUCTURE.md](docs/FILE_STRUCTURE.md). Design background is in [d
 - **No Swift macros.** The app must build with Command Line Tools alone (plain `swiftc`, no Xcode project, no SwiftPM macro targets). CI runs on runners that have full Xcode, so a macro would compile there but break local builds. Do not rely on CI to catch it.
 - **No network, no telemetry, no crash reporting.** Nothing leaves the user's machine. PRs that add network calls will not be merged.
 - **No third-party dependencies.** Apple frameworks and the Swift standard library only.
-- Logs stay plain markdown at `~/daily-log/YYYY-MM-DD.md` (or the user's chosen folder).
+- Logs stay plain markdown at `~/Gloamlog/YYYY-MM-DD.md` (or the user's chosen folder).
 
 ## Pull request checklist
 

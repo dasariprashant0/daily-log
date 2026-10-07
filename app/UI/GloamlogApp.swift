@@ -1,14 +1,14 @@
-// DailyLogApp.swift - @main: main Window, MenuBarExtra, Settings scene, menu commands.
+// GloamlogApp.swift - @main: main Window, MenuBarExtra, Settings scene, menu commands.
 import SwiftUI
 
 @main
-struct DailyLogApp: App {
+struct GloamlogApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = AppModel.shared
     @AppStorage("showMenuBar") private var showMenuBar = true
 
     var body: some Scene {
-        Window("Daily Log", id: "main") {
+        Window("Gloamlog", id: "main") {
             MainView(model: model)
         }
         .defaultSize(width: 1000, height: 760)
@@ -29,15 +29,18 @@ struct DailyLogApp: App {
 struct AppCommands: Commands {
     @ObservedObject var model: AppModel
     private var onDay: Bool { if case .day = model.selection { return true }; return false }
+    private var canEdit: Bool { onDay && (model.editor?.showsEditor ?? false) }
 
     var body: some Commands {
-        CommandGroup(replacing: .appInfo) { Button("About Daily Log") { AppDelegate.showAbout() } }
+        CommandGroup(replacing: .appInfo) { Button("About Gloamlog") { AppDelegate.showAbout() } }
         CommandGroup(replacing: .saveItem) {
-            Button(model.editor.hasFile && model.editor.day != model.today ? "Save Changes" : "Save Log") { model.saveCurrent() }
-                .keyboardShortcut("s").disabled(!onDay)
-            Button("Skip Day…") { model.requestSkip(day: onDay ? model.editor.day : nil) }.keyboardShortcut("k", modifiers: [.command, .shift])
+            // Autosave is always on; ⌘S just flushes right now, as people expect.
+            Button("Save Now") { model.flushEditor() }.keyboardShortcut("s").disabled(!canEdit)
+            Button("Skip Day…") { model.requestSkip(day: onDay ? model.editor?.day : nil) }.keyboardShortcut("k", modifiers: [.command, .shift])
             Button("Remind Me Later") { model.snooze() }.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(!model.isDue || !model.canSnooze)
             Divider()
+            Button("Copy Page as Markdown") { model.copyPageMarkdown() }.disabled(!canEdit)
+            Button("Restore Previous Version…") { if let d = model.editor?.day { model.sheet = .restore(d) } }.disabled(!onDay)
             Button("Open Log Folder in Finder") { model.revealFolder() }.keyboardShortcut("o", modifiers: [.command, .shift])
         }
         CommandGroup(replacing: .textEditing) {
@@ -46,10 +49,8 @@ struct AppCommands: Commands {
             Button("Previous Search Result") { model.moveSearchCursor(-1) }.keyboardShortcut("g", modifiers: [.command, .shift])
         }
         CommandMenu("Log") {
-            Button("Jump to First Empty Section") { model.focusFirstEmpty() }.keyboardShortcut("e").disabled(!onDay)
-            Button("Next Section") { model.moveFocus(1, from: model.focusRequest?.sectionID) }.keyboardShortcut(.downArrow, modifiers: [.command, .option]).disabled(!onDay)
-            Button("Previous Section") { model.moveFocus(-1, from: model.focusRequest?.sectionID) }.keyboardShortcut(.upArrow, modifiers: [.command, .option]).disabled(!onDay)
-            Button("Carry Over from Yesterday") { model.carryOver() }.keyboardShortcut("y", modifiers: [.command, .shift]).disabled(model.carryCard == nil)
+            Button("Focus the Page") { model.focusEditor() }.keyboardShortcut("e").disabled(!canEdit)
+            Button("Carry Over from Yesterday") { model.carryOver() }.keyboardShortcut("y", modifiers: [.command, .shift]).disabled(!model.carryAvailable)
             Divider()
             Button("Today") { model.openToday() }.keyboardShortcut("1")
             Button("This Week") { model.select(.week) }.keyboardShortcut("2")

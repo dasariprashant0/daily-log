@@ -1,4 +1,4 @@
-// SettingsView.swift - Settings scene: General | Sections | Storage. Changes apply immediately (no Save button).
+// SettingsView.swift - Settings scene: General | Page | Storage. Changes apply immediately (no Save button).
 import SwiftUI
 
 struct SettingsView: View {
@@ -6,7 +6,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettings(model: model).tabItem { Label("General", systemImage: "gearshape") }
-            SectionsEditor(model: model).tabItem { Label("Sections", systemImage: "list.bullet") }
+            PageSettings(model: model).tabItem { Label("Page", systemImage: "doc.text") }
             StorageSettings(model: model).tabItem { Label("Storage", systemImage: "folder") }
         }
         .frame(width: 520).padding(.vertical, Theme.s2)
@@ -51,7 +51,7 @@ struct GeneralSettings: View {
                 Text("Keep at least one day.").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
             }
             Section("When the reminder fires") {
-                ModeRow(mode: .strict, title: "Strict", detail: "Brings Daily Log to the front and keeps re-opening it every 5 minutes until you save or skip the day.", current: $model.settings.mode)
+                ModeRow(mode: .strict, title: "Strict", detail: "Brings Gloamlog to the front and keeps re-opening it every 5 minutes until you save or skip the day.", current: $model.settings.mode)
                 ModeRow(mode: .gentle, title: "Gentle", detail: "Sends one notification. Nothing else.", current: $model.settings.mode)
                 Picker("Snooze for", selection: $model.settings.snoozeMinutes) {
                     ForEach(Settings.snoozeChoices, id: \.self) { Text("\($0) minutes").tag($0) }
@@ -59,7 +59,7 @@ struct GeneralSettings: View {
                 Text("Strict allows 2 snoozes a day. Gentle allows any number.").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
             }
             Section {
-                Toggle("Open Daily Log at login", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
+                Toggle("Open Gloamlog at login", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
                 Text("Needed for reminders after a restart. Off until you turn it on.").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
                 if let m = model.loginMessage {
                     HStack {
@@ -69,7 +69,7 @@ struct GeneralSettings: View {
                 }
                 Toggle("Show in menu bar", isOn: $showMenuBar)
                 HStack {
-                    Text(model.notifState == .denied ? "Notifications are off for Daily Log." : model.notifState == .allowed ? "Notifications: On" : "Notifications: not requested yet")
+                    Text(model.notifState == .denied ? "Notifications are off for Gloamlog." : model.notifState == .allowed ? "Notifications: On" : "Notifications: not requested yet")
                     Spacer()
                     if model.notifState == .denied { Button("Open System Settings") { model.openNotificationSettings() } }
                     else if model.notifState == .unknown { Button("Allow") { Notifier.shared.requestAuthorization { _ in Notifier.shared.refreshState { s in model.notifState = s } } } }
@@ -107,7 +107,7 @@ struct StorageSettings: View {
                     }
                 }
                 if let p = model.folderProblem {
-                    Text(p == .missing(p.path) ? "This folder can't be found." : "Daily Log can't write to this folder.")
+                    Text(p == .missing(p.path) ? "This folder can't be found." : "Gloamlog can't write to this folder.")
                         .font(Theme.font(12)).foregroundColor(Theme.danger)
                 }
             }

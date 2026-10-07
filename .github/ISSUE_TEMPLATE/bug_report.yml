@@ -21,7 +21,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Daily Log version
+      label: Gloamlog version
       description: Release tag, or commit if built from source.
     validations:
       required: true

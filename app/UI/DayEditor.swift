@@ -1,151 +1,242 @@
-// DayEditor.swift - editing state for ONE day (bound to the day it was opened for, so midnight never moves text).
-// Autosaves a draft ~1 s after the last keystroke via DraftStore (outside the storage folder).
+// DayEditor.swift - the state of ONE day's page while it is open (the page text itself lives in the web editor).
+// Bound to the day it was opened for: a page opened as "today" stays that day after midnight.
+//
+// Data-loss rules (docs/EDITOR_CONTRACT.md, "Autosave"):
+//  * `loaded` becomes true only after the web editor is READY and the initial setMarkdown for THIS day has completed.
+//    Nothing is written before that, and change events are ignored until then.
+//  * A day that was merely opened is never written: only a `change` event (a user edit, never a programmatic setMarkdown)
+//    or a final read that differs from what was loaded marks the page as edited.
+//  * A page with no file and no net change from what was loaded (the template untouched, or typed and deleted again) is
+//    never created on disk. Typing even just a heading is a real edit and is saved.
+//  * An empty page may delete an existing file only because the user emptied it; the core backs the old text up first.
 import SwiftUI
 import AppKit
 
 final class DayEditor: ObservableObject {
     let day: String
     unowned let model: AppModel
-    @Published var texts: [String: String] = [:]
-    @Published var extras: [ExtraSection] = []
-    @Published var isSkipped = false
-    @Published var skipReason = ""
-    @Published var hasFile = false
-    @Published var writingAnyway = false
-    @Published var restoredFrom: Date?
-    @Published var draftSavedAt: Date?
-    @Published var savedAt: Date?
-    @Published var errorText: String?
-    @Published var note: String?            // transient status line, e.g. "2 sections still empty"
-    @Published var editBannerDismissed = false
+    let token = UUID().uuidString
     let openedAsToday: Bool
-    private var baseTexts: [String: String] = [:]
-    private var baseExtras: [ExtraSection] = []
-    private var pending: DispatchWorkItem?
+
+    @Published private(set) var words = 0
+    @Published private(set) var isSkipped: Bool
+    @Published private(set) var skipReason: String
+    @Published var writingAnyway = false
+    @Published private(set) var loaded = false
+    @Published private(set) var loadFailed = false
+    @Published private(set) var savedFlash = false
+    @Published private(set) var latest = ""             // newest markdown known from the editor
+    @Published var errorText: String?
+    @Published var externalNotice = false
+    @Published var backupNotice: String?
+    @Published private(set) var rawTextOnly = false      // the editor could not parse the page without loss: raw text, read-only
+
+    private(set) var initialBody: String
+    private(set) var diskBody: String?                  // body on disk as a later load() would return it; nil = no log file
+    private(set) var userEdited = false
+    private var baseline = ""
+    private var stable = true
+    private var abandoned = false
+    private var forceBackupNext = false                 // the file on disk is somebody else's version: back it up for sure
+    private var saveWork: DispatchWorkItem?
+    private var flashWork: DispatchWorkItem?
 
     init(day: String, model: AppModel) {
         self.day = day; self.model = model
         openedAsToday = day == model.today
-        let sections = model.settings.sections
-        let entry = (try? model.store.load(day)) ?? nil
-        for s in sections { texts[s.id] = entry?.texts[s.id] ?? "" }
-        extras = entry?.extras ?? []
-        isSkipped = entry?.isSkipped ?? false
-        skipReason = entry?.skipReason ?? ""
-        hasFile = entry != nil
-        baseTexts = texts; baseExtras = extras
-        if let d = model.drafts.load(day) {
-            var merged = texts
-            for (k, v) in d.texts where merged[k] != nil { merged[k] = v }
-            if merged == baseTexts { model.drafts.clear(day) } else { texts = merged; restoredFrom = d.savedAt }
-        }
+        let doc = (try? model.store.load(day)) ?? nil
+        isSkipped = doc?.isSkipped ?? false
+        skipReason = doc?.skipReason ?? ""
+        diskBody = (doc != nil && doc?.isSkipped == false) ? doc?.body : nil
+        let body = diskBody ?? ""
+        // A new (or empty) page starts from the template, in the editor only.
+        initialBody = MarkdownBody.trimBody(body).isEmpty ? model.settings.template : body
+        words = MarkdownBody.words(in: initialBody)
+        latest = initialBody
     }
 
-    // MARK: derived state
-    var sections: [SectionDef] { model.settings.sections }
-    func text(_ id: String) -> String { texts[id] ?? "" }
-    func isFilled(_ id: String) -> Bool { !text(id).dlTrimmed.isEmpty }
-    var filled: Int { sections.filter { isFilled($0.id) }.count }
-    var total: Int { sections.count }
-    var missing: [SectionDef] { sections.filter { $0.required && !isFilled($0.id) } }
-    var dirty: Bool {
-        if hasFile { return texts != baseTexts || extras != baseExtras }
-        return texts.values.contains { !$0.dlTrimmed.isEmpty }
-    }
-    var showsEditors: Bool { !isSkipped || writingAnyway }
-    var canSave: Bool { showsEditors && missing.isEmpty && dirty }
-    var firstEmptyID: String? { (missing.first ?? sections.first { !isFilled($0.id) })?.id }
+    // MARK: derived
+    var showsEditor: Bool { !isSkipped || writingAnyway }
+    var baselineMarkdown: String { baseline }
+    var minWords: Int { model.settings.minWords }
+    var isLogged: Bool { words >= max(1, minWords) }
 
-    var chip: (StatusChip.Kind, String) {
-        if errorText != nil { return (.error, "Couldn't save") }
-        if let n = note { return (.unsaved, n) }
-        if dirty {
-            if !hasFile, let t = draftSavedAt ?? restoredFrom { return (.draft, "Draft saved \(Fmt.time(t))") }
-            return (.unsaved, "Unsaved changes")
-        }
-        if let s = savedAt { return (.saved, "Saved ✓ \(Fmt.time(s))") }
-        if hasFile && !isSkipped { return (.saved, "Saved ✓") }
-        return (.none, "Not started")
+    static func diskForm(_ day: String, _ body: String) -> String {
+        MarkdownFormat.parse(day: day, raw: MarkdownFormat.serialize(day: day, body: body)).body
     }
 
-    // MARK: editing
-    func setText(_ id: String, _ v: String) {
-        guard texts[id] != v else { return }
-        texts[id] = v; touched()
-    }
-    func setExtra(_ i: Int, _ v: String) {
-        guard extras.indices.contains(i), extras[i].text != v else { return }
-        extras[i].text = v; touched()
-    }
-    private func touched() { errorText = nil; note = nil; savedAt = nil; scheduleDraft() }
-    func insertNothing(_ id: String) { setText(id, "Nothing.") }
-
-    func revert() {
-        texts = baseTexts; extras = baseExtras; restoredFrom = nil; draftSavedAt = nil
-        pending?.cancel(); model.drafts.clear(day); model.draftDays.remove(day)
-    }
-    func discardDraft() { revert() }
-
-    // MARK: draft autosave
-    private func scheduleDraft() {
-        pending?.cancel()
-        let w = DispatchWorkItem { [weak self] in if let s = self { s.writeDraft(sync: false) } }
-        pending = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
-    }
-    /// Flush now (terminate, window close, resign active, day switch).
-    func flush() { if pending != nil { pending?.cancel(); pending = nil; writeDraft(sync: true) } }
-
-    private func writeDraft(sync: Bool) {
-        pending = nil
-        let store = model.drafts, day = self.day, snapshot = texts, isDirty = dirty, now = model.clock()
-        let job: () -> Void = {
-            if isDirty { _ = try? store.save(day: day, texts: snapshot, now: now) } else { store.clear(day) }
-        }
-        if sync { job() } else { DispatchQueue.global(qos: .utility).async(execute: job) }
-        if isDirty { draftSavedAt = now; model.draftDays.insert(day) } else { draftSavedAt = nil; model.draftDays.remove(day) }
+    /// What gets written for `md`: a page that is nothing but empty headings ("##", what select-all + delete leaves
+    /// behind) is an emptied page, which the core turns into "no log" (it deletes the file after backing it up).
+    static func writable(_ md: String) -> String {
+        let lines = md.components(separatedBy: "\n").map { $0.dlTrimmed }.filter { !$0.isEmpty }
+        let emptyHeading: (String) -> Bool = { $0.first == "#" && $0.allSatisfy { $0 == "#" } && $0.count <= 6 }
+        return lines.allSatisfy(emptyHeading) ? "" : md
     }
 
-    // MARK: save
-    @discardableResult
-    func save() -> Bool {
-        guard showsEditors else { return false }
-        if !missing.isEmpty {
-            let n = missing.count
-            note = "\(Fmt.plural(n, "section")) still empty"
-            model.requestFocus(missing[0].id)
-            return false
-        }
-        var entry = DayEntry(date: day, texts: texts, extras: extras.filter { !$0.text.dlTrimmed.isEmpty })
-        entry.refreshStatus(sections: sections)
-        do { try model.store.save(entry) }
-        catch let e as LogError { fail(e); return false }
-        catch { errorText = error.localizedDescription; return false }
-        pending?.cancel(); pending = nil
-        model.drafts.clear(day)
-        for k in texts.keys { texts[k] = text(k).dlTrimmed }
-        extras = entry.extras
-        baseTexts = texts; baseExtras = extras
-        hasFile = true; isSkipped = false; writingAnyway = false
-        savedAt = model.clock(); restoredFrom = nil; draftSavedAt = nil; errorText = nil; note = nil
-        model.didSave(self)
+    /// True when a write would change the file (and is allowed to).
+    var hasUnsavedEdits: Bool {
+        guard loaded, userEdited, !abandoned else { return false }
+        let body = DayEditor.writable(latest)
+        if diskBody == nil && MarkdownBody.trimBody(body).isEmpty { return false }       // no file and nothing to write: same thing
+        if diskBody == DayEditor.diskForm(day, body) { return false }
+        // No file yet and no net change from what was loaded (typed and deleted again): nothing to create.
+        if diskBody == nil && MarkdownBody.trimBody(body) == MarkdownBody.trimBody(DayEditor.writable(baseline)) { return false }
         return true
+    }
+
+    /// A page that is exactly the template and has never been written: it only holds headings.
+    var isPristineTemplate: Bool {
+        guard loaded, !userEdited, diskBody == nil, showsEditor else { return false }
+        let t = MarkdownBody.trimBody(model.settings.template)
+        return !MarkdownBody.headings(inTemplate: t).isEmpty && MarkdownBody.trimBody(initialBody) == t
+    }
+
+    // MARK: lifecycle driven by the model
+    func didLoad(markdown: String, stable: Bool) {
+        baseline = markdown; latest = markdown; self.stable = stable
+        userEdited = false; abandoned = false; loadFailed = false; loaded = true
+        words = MarkdownBody.words(in: markdown)
+    }
+    func markLoadFailed() { loaded = false; loadFailed = true }
+    func showRawTextNotice() { if loaded || !rawTextOnly { rawTextOnly = true } }
+    func markNotLoaded() { loaded = false }
+
+    /// The page text changed because the USER edited it.
+    func userChanged(_ md: String) {
+        guard loaded, !abandoned, md != latest else { return }
+        latest = md; userEdited = true
+        words = MarkdownBody.words(in: md)
+        backupNotice = nil
+        scheduleSave()
+    }
+
+    /// A change Swift made itself (carry-over, undo) that must still reach the file.
+    func programmaticEdit(to md: String) {
+        guard loaded, !abandoned else { return }
+        latest = md; userEdited = true
+        words = MarkdownBody.words(in: md)
+        scheduleSave()
+    }
+
+    /// The page is being replaced (day switch, quit, flush). `md` is its final text if the editor could tell.
+    func finish(with md: String?) {
+        saveWork?.cancel(); saveWork = nil
+        guard loaded, !abandoned else { return }
+        if let md = md, md != latest {
+            // Typed within the page's 300 ms debounce. Trust it only if the serialiser is stable for this page.
+            if userEdited || stable { latest = md; userEdited = true; words = MarkdownBody.words(in: md) }
+        }
+        _ = write()
+    }
+
+    /// Drop everything unsaved (the page was restored/skipped/replaced from disk on purpose).
+    func abandon() {
+        saveWork?.cancel(); saveWork = nil
+        abandoned = true; userEdited = false
+    }
+
+    /// The web process died: save what we last knew, then wait for a fresh page. If the text could not be written the
+    /// editor stays "loaded" (it is kept as an orphan and retried).
+    func processDied() {
+        saveWork?.cancel(); saveWork = nil
+        _ = write()
+        if !hasUnsavedEdits { loaded = false }
+    }
+
+    // MARK: autosave
+    private func scheduleSave() {
+        saveWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in if let s = self { s.saveWork = nil; _ = s.write() } }
+        saveWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: w)
+    }
+
+    func retryIfNeeded() { if errorText != nil && hasUnsavedEdits { _ = write() } }
+
+    @discardableResult
+    func write() -> Bool {
+        guard hasUnsavedEdits else { return true }
+        // The file changed on disk since we last looked (another Mac, another editor): that version must survive. The core
+        // throttles backups of ordinary autosaves (minBackupInterval), so a conflicting overwrite forces one.
+        let before = readDisk()
+        let conflict = before.body != diskBody || before.skipped != isSkipped
+        let force = forceBackupNext || conflict
+        if conflict { externalNotice = true }
+        if force { model.store.minBackupInterval = 0 }
+        defer { if force { model.store.minBackupInterval = AppModel.backupInterval } }
+        do {
+            let outcome = try model.store.save(day: day, body: DayEditor.writable(latest))
+            forceBackupNext = false
+            backupNotice = outcome.backupWarning
+            let disk = readDisk()
+            diskBody = disk.body; isSkipped = disk.skipped; skipReason = disk.reason
+            if !disk.skipped { writingAnyway = false }
+            errorText = nil; externalNotice = false
+            flashSaved()
+            model.didSave(day: day)
+            return true
+        } catch let e as LogError {
+            fail(e); return false
+        } catch {
+            errorText = error.localizedDescription; return false
+        }
     }
 
     private func fail(_ e: LogError) {
         switch e {
-        case .folderMissing(let p): model.folderProblem = .missing(p); errorText = "Folder not found"
-        case .folderNotWritable(let p): model.folderProblem = .notWritable(p); errorText = "Folder not writable"
-        case .io(let m): errorText = m
-        default: errorText = "Couldn't save today's log."
+        case .folderMissing(let p): model.folderProblem = .missing(p); errorText = "The log folder can't be found."
+        case .folderNotWritable(let p): model.folderProblem = .notWritable(p); errorText = "Gloamlog can't save to the log folder."
+        case .io(let m): errorText = "Couldn't save. \(m)"
+        default: errorText = "Couldn't save this page."
         }
-        flush(); writeDraft(sync: true)   // text stays safe as a draft
+        if model.live { UIAnnounce.say("Couldn't save. Your text is still on screen.", assertive: true) }
     }
 
-    func markdown() -> String {
-        MarkdownFormat.serialize(day: day, sections: sections.map { ($0.title, text($0.id)) } + extras.map { ($0.title, $0.text) })
+    private func flashSaved() {
+        savedFlash = true
+        flashWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in if let s = self { s.savedFlash = false } }
+        flashWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: w)
     }
-    func copyText() {
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(markdown(), forType: .string)
+
+    // MARK: disk
+    func readDisk() -> (body: String?, skipped: Bool, reason: String) {
+        guard let doc = (try? model.store.load(day)) ?? nil else { return (nil, false, "") }
+        return doc.isSkipped ? (nil, true, doc.skipReason) : (doc.body, false, "")
+    }
+
+    /// Called on the timer / app activation. Quiet reload when nothing is unsaved, a small notice otherwise.
+    func checkExternalChange() {
+        guard loaded, !abandoned else { return }
+        let disk = readDisk()
+        if disk.body == diskBody && disk.skipped == isSkipped { return }
+        if hasUnsavedEdits {
+            diskBody = disk.body                    // acknowledged: our version replaces theirs at the next save
+            forceBackupNext = true                  // ... after the core has copied theirs aside
+            externalNotice = true
+            return
+        }
+        if disk.skipped != isSkipped { model.openDay(day, force: true); return }
+        guard let b = model.bridgeIfCreated else { return }
+        let newBody = MarkdownBody.trimBody(disk.body ?? "").isEmpty ? model.settings.template : (disk.body ?? "")
+        let known = latest
+        b.replace(token: token, expecting: known, markdown: newBody, cursor: .keep) { [weak self] normalized in
+            guard let self = self else { return }
+            self.diskBody = disk.body
+            if let n = normalized {
+                self.baseline = n; self.latest = n; self.userEdited = false
+                self.words = MarkdownBody.words(in: n)
+            } else { self.externalNotice = true }   // the user typed while we looked: keep their version, tell them
+        }
+    }
+}
+
+/// VoiceOver announcements (callers check `model.live` so the snapshot harness never touches NSApp).
+enum UIAnnounce {
+    static func say(_ text: String, assertive: Bool = false) {
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text,
+                                        .priority: (assertive ? NSAccessibilityPriorityLevel.high : NSAccessibilityPriorityLevel.low).rawValue])
     }
 }

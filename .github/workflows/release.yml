@@ -19,6 +19,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          mv app/DailyLog.zip "app/DailyLog-${TAG}.zip"
-          gh release create "$TAG" "app/DailyLog-${TAG}.zip" \
+          mv app/Gloamlog.zip "app/Gloamlog-${TAG}.zip"
+          gh release create "$TAG" "app/Gloamlog-${TAG}.zip" \
             --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes

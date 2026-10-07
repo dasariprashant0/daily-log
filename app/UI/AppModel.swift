@@ -1,6 +1,7 @@
-// AppModel.swift - the single ObservableObject that owns LogStore, DraftStore, Settings, planner state and navigation.
+// AppModel.swift - the single ObservableObject that owns LogStore, Settings, planner state, navigation and the open page.
 // Everything runs on the main thread by convention (no @MainActor: closures from Timer/NotificationCenter stay simple).
-// Extensions: AppModel+Day (skip/carry), +Reminders (timer/notify/window), +Storage (folder/login), +Browse (search/week).
+// Extensions: +Editor (page switching, flush, bridge delegate), +Day (skip, carry-over, versions), +Reminders (timer,
+// notifications, window), +Storage (folder, login item), +Browse (search, weekly review).
 import SwiftUI
 import Combine
 import AppKit
@@ -8,9 +9,14 @@ import AppKit
 enum Destination: Hashable { case day(String), week, search }
 
 enum ActiveSheet: Identifiable, Equatable {
-    case skip(String), onboarding, whatsNew
+    case skip(String), onboarding, whatsNew, restore(String)
     var id: String {
-        switch self { case .skip(let d): return "skip-\(d)"; case .onboarding: return "onboarding"; case .whatsNew: return "whatsnew" }
+        switch self {
+        case .skip(let d): return "skip-\(d)"
+        case .onboarding: return "onboarding"
+        case .whatsNew: return "whatsnew"
+        case .restore(let d): return "restore-\(d)"
+        }
     }
 }
 
@@ -20,24 +26,29 @@ enum FolderProblem: Equatable {
 }
 
 enum NotifState { case unknown, allowed, denied }
-struct FocusRequest: Equatable { var sectionID: String; var token: Int }
 
 final class AppModel: ObservableObject {
     static let shared = AppModel()
     static let plannerKey = "dailylog.planner.v1"
+    static let whatsNewKey = "dailylog.whatsNew.0.3"
+    /// Safety copies live outside the storage folder so they never sync with the logs.
+    static var defaultBackupDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Gloamlog/backups")
+    }
+    /// Autosave overwrites while the newest backup is younger than this do not copy again, so the 10 slots span a long session.
+    static let backupInterval: TimeInterval = 120
 
     let cal = Calendar.current
     let defaults: UserDefaults
-    let live: Bool                       // false in the snapshot harness: no timers, notifications or login item
+    let live: Bool                       // false in the snapshot harness: no timers, web view, notifications or login item
     var clock: () -> Date
+    let backupDir: URL
     var store: LogStore
-    let drafts: DraftStore
 
     @Published var now: Date
     @Published var settings: Settings { didSet { settingsChanged(old: oldValue) } }
     @Published var states: [String: DayStatus] = [:]
     @Published var skipReasons: [String: String] = [:]
-    @Published var draftDays: Set<String> = []
     @Published var folderProblem: FolderProblem?
     @Published var streak = StreakResult(current: 0, best: 0)
     @Published var heat: [[HeatCell]] = []
@@ -47,17 +58,19 @@ final class AppModel: ObservableObject {
     @Published var planner: PlannerState { didSet { persistPlanner() } }
     @Published var notifState: NotifState = .unknown
     @Published var collapsedMonths: [String: Bool] = [:]
-    @Published var focusRequest: FocusRequest?
-    @Published var quietLine: String?
     @Published var rolloverDismissed = false
-    // carry-over
+    @Published var nagDismissedDay = ""
+    @Published var editorProblem: String?
+    @Published var pageNotice: String?          // transient: an image that could not be added, etc.
+    /// Pages the user has left whose last edits could not be written (folder unavailable). Kept in memory and retried, so
+    /// leaving a page never discards unsaved text; the quit path asks before giving them up.
+    @Published var orphans: [DayEditor] = []
+    // From yesterday
     @Published var carryCard: CarryCard?
-    @Published var carried = false
-    @Published var carryUndo: String?
-    @Published var carryExpanded = false
+    @Published var carryUndoBody: String?
     // search
     @Published var searchText = ""
-    @Published var searchSection: String?
+    @Published var searchHeading: String?
     @Published var searchHits: [SearchHit] = []
     @Published var searchCursor = 0
     @Published var searchFocusTick = 0
@@ -73,16 +86,18 @@ final class AppModel: ObservableObject {
     @Published var loginMessage: String?
 
     var cancellables = Set<AnyCancellable>()
-    var focusToken = 0
     var timer: Timer?
     var screensAsleep = false
-    var quietWork: DispatchWorkItem?
     var openWindowAction: (() -> Void)?
-    var editorStartedFocused = false
+    var bridgeStorage: EditorBridge?
+    var retiredMarkdown: String?         // the previous page's final text: a late change event equal to it is not the new page's
 
-    init(defaults: UserDefaults = .standard, draftsDir: URL = DraftStore.defaultDir, live: Bool = true,
+    init(defaults: UserDefaults = .standard, backupDir: URL = AppModel.defaultBackupDir, live: Bool = true,
          clock: @escaping () -> Date = Date.init) {
-        self.defaults = defaults; self.live = live; self.clock = clock
+        self.defaults = defaults; self.live = live; self.clock = clock; self.backupDir = backupDir
+        // Once-only carry-over from the app's earlier name. Only for the real app (the standard defaults), never for the
+        // test/snapshot harnesses, which pass their own throwaway suites and must not touch the user's real data.
+        if live && defaults === UserDefaults.standard { LegacyMigration.run(into: defaults) }
         var s = Settings.load(from: defaults)
         let isV1 = defaults.object(forKey: Settings.storageKey) == nil && defaults.object(forKey: "remindMinutes") != nil
         if isV1 { s.reminderMinutes = defaults.integer(forKey: "remindMinutes"); s.onboarded = true }
@@ -92,8 +107,7 @@ final class AppModel: ObservableObject {
         now = n
         let today = DayKey.string(n, cal)
         selection = .day(today); returnSelection = .day(today); weekDate = n
-        store = LogStore(dir: s.storageFolder, sections: s.sections)
-        drafts = DraftStore(dir: draftsDir)
+        store = AppModel.makeStore(dir: s.storageFolder, backupDir: backupDir)
         if let d = defaults.data(forKey: AppModel.plannerKey), let p = try? JSONDecoder().decode(PlannerState.self, from: d) {
             planner = PlannerState.atLaunch(previous: p, now: n, calendar: cal)
         } else { planner = PlannerState.atLaunch(previous: nil, now: n, calendar: cal) }
@@ -105,20 +119,19 @@ final class AppModel: ObservableObject {
         if live { decideFirstRun(isV1: isV1) }
     }
 
+    static func makeStore(dir: URL, backupDir: URL) -> LogStore {
+        LogStore(dir: dir, backupDir: backupDir, minBackupInterval: backupInterval)
+    }
+
     private func decideFirstRun(isV1: Bool) {
-        if !settings.onboarded {
-            sheet = .onboarding
-        } else if defaults.object(forKey: "dailylog.whatsNew.0.2") == nil && isV1 {
-            sheet = .whatsNew
-        }
+        if !settings.onboarded { sheet = .onboarding }
+        else if defaults.object(forKey: AppModel.whatsNewKey) == nil { sheet = .whatsNew }
     }
 
     // MARK: derived
     var today: String { DayKey.string(now, cal) }
     var since: String? { states.keys.min() }
-    var todayStatus: DayStatus {
-        Status.resolve(day: today, fileState: states[today], now: now, calendar: cal, weekdays: settings.weekdays, since: since)
-    }
+    var todayStatus: DayStatus { status(of: today) }
     var snoozed: Bool { if let u = planner.snoozedUntil { return now < u }; return false }
     var isDue: Bool {
         ReminderPlanner.isPending(now: now, calendar: cal, settings: settings, todayStatus: todayStatus) && !snoozed
@@ -132,10 +145,11 @@ final class AppModel: ObservableObject {
     func spokenDate(_ day: String) -> String { DayKey.format(day, "EEEE d MMMM", cal) }
     var reminderLabel: String { Fmt.clock(minutes: settings.reminderMinutes, calendar: cal, now: now) }
     var folderDisplay: String { (settings.storageFolder.path as NSString).abbreviatingWithTildeInPath }
+    var minWords: Int { settings.minWords }
 
-    /// History rows: every day with a file or a draft, except today, newest first.
+    /// History rows: every day with a file (logged, partial or skipped), except today, newest first.
     var historyDays: [String] {
-        var set = Set(states.keys).union(draftDays)
+        var set = Set(states.keys)
         set.remove(today)
         return set.sorted(by: >)
     }
@@ -146,83 +160,73 @@ final class AppModel: ObservableObject {
         catch LogError.folderMissing(let p) { folderProblem = .missing(p) }
         catch LogError.folderNotWritable(let p) { folderProblem = .notWritable(p) }
         catch { }
-        let st = (try? store.fileStates()) ?? [:]
+        let st = (try? store.fileStates(minWords: settings.minWords)) ?? [:]
         states = st
         var reasons = [String: String]()
         for (d, s) in st where s == .skipped { if let e = (try? store.load(d)) ?? nil { reasons[d] = e.skipReason } }
         skipReasons = reasons
-        draftDays = Set(drafts.days())
-        streak = Streak.compute(states: st, now: now, calendar: cal, weekdays: settings.weekdays)
-        heat = Heatmap.weeks(states: st, now: now, calendar: cal, weekdays: settings.weekdays)
+        recompute()
+    }
+
+    /// Streak and heatmap from the in-memory states (no disk). Also used after a single day's save.
+    func recompute() {
+        streak = Streak.compute(states: states, now: now, calendar: cal, weekdays: settings.weekdays)
+        heat = Heatmap.weeks(states: states, now: now, calendar: cal, weekdays: settings.weekdays)
         if selection == .week { refreshWeek() }
     }
 
+    /// One day was written: update just that day's state, not every file.
+    func didSave(day: String) {
+        let doc = (try? store.load(day)) ?? nil
+        let st = doc?.status(minWords: settings.minWords)
+        if let s = st, s != .missed { states[day] = s } else { states[day] = nil }
+        if st == .skipped { skipReasons[day] = doc?.skipReason ?? "" } else { skipReasons[day] = nil }
+        folderProblem = nil
+        recompute()
+        if live && todayStatus == .logged { Notifier.shared.cancelAll() }
+        if st == .logged && day == today && live { UIAnnounce.say("Logged for today") }
+    }
+
     func settingsChanged(old: Settings) {
+        let words = min(max(settings.minWords, Settings.minWordsRange.lowerBound), Settings.minWordsRange.upperBound)
+        if words != settings.minWords { settings.minWords = words; return }          // re-enters with a valid value
         settings.save(to: defaults)
-        store.sections = settings.sections
         if live && old != settings { planner = planner.suppressed(until: clock().addingTimeInterval(ReminderPlanner.graceAfterSettingsChange)) }
-        if old.weekdays != settings.weekdays || old.reminderMinutes != settings.reminderMinutes { reload() }
-        if old.sections != settings.sections, let e = editor, !e.dirty { editor = DayEditor(day: e.day, model: self) }
+        if old.weekdays != settings.weekdays || old.reminderMinutes != settings.reminderMinutes || old.minWords != settings.minWords { reload() }
+        if old.carryOverHeadings != settings.carryOverHeadings { refreshCarry() }
+        // A page nobody has touched follows the template; a page with writing never does.
+        if old.template != settings.template, let e = editor, !e.userEdited, e.diskBody == nil, !e.isSkipped, case .day = selection {
+            openDay(e.day, force: true)
+        }
     }
 
     func persistPlanner() { defaults.set(try? JSONEncoder().encode(planner), forKey: AppModel.plannerKey) }
 
     // MARK: navigation
     func select(_ d: Destination) {
-        flushEditor()
         switch d {
-        case .day(let k):
-            if editor?.day != k { editor = DayEditor(day: k, model: self); rolloverDismissed = false }
-            refreshCarry()
-        case .week: weekDate = clock(); refreshWeek()
-        case .search: break
+        case .day(let k): openDay(k)
+        case .week:
+            selection = .week
+            weekDate = clock(); refreshWeek()
+            flushEditor { [weak self] in self?.refreshWeek() }       // include text typed a moment ago
+        case .search: selection = .search
         }
-        selection = d
         if case .search = d {} else if !searchText.isEmpty { searchText = "" }
     }
     func openToday() { select(.day(today)) }
-    func flushEditor() { editor?.flush() }
 
-    /// Previous/next in the History order (⌘[ / ⌘]) or previous/next week.
+    /// Previous/next in the history order (⌘[ / ⌘]) or previous/next week.
     func step(_ dir: Int) {
         if selection == .week {
-            let next = WeeklyReview.shift(weekDate, weeks: dir, calendar: cal)
             guard dir < 0 || canShowNextWeek else { return }
-            weekDate = next; refreshWeek(); return
+            weekDate = WeeklyReview.shift(weekDate, weeks: dir, calendar: cal); refreshWeek(); return
         }
         guard case .day(let cur) = selection else { return }
         let list = [today] + historyDays
         guard let i = list.firstIndex(of: cur) else { return }
-        let j = i - dir                       // list is newest first; "previous" = older = higher index
+        let j = i - dir                       // newest first: "previous" = older = higher index
         if list.indices.contains(j) { select(.day(list[j])) }
-    }
-
-    func requestFocus(_ id: String) { focusToken += 1; focusRequest = FocusRequest(sectionID: id, token: focusToken) }
-    func focusFirstEmpty() { if let id = editor.firstEmptyID { requestFocus(id) } }
-    func moveFocus(_ delta: Int, from current: String?) {
-        let ids = editor.sections.map { $0.id }
-        guard !ids.isEmpty else { return }
-        let i = current.flatMap { ids.firstIndex(of: $0) } ?? (delta > 0 ? -1 : ids.count)
-        requestFocus(ids[min(max(i + delta, 0), ids.count - 1)])
-    }
-
-    func saveCurrent() {
-        guard case .day = selection, editor.showsEditors else { return }
-        editor.save()
-    }
-
-    func didSave(_ e: DayEditor) {
-        let before = streak.current
-        reload()
-        if live { Notifier.shared.cancelAll() }
-        if e.day == today && streak.current > before && streak.current >= 2 { flashQuiet("\(streak.current) days in a row.") }
-        refreshCarry()
-    }
-
-    func flashQuiet(_ s: String) {
-        quietLine = s; quietWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in if let s = self { s.quietLine = nil } }
-        quietWork = w; DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: w)
     }
 
     func toggleMonth(_ key: String, defaultCollapsed: Bool) {
@@ -237,7 +241,6 @@ extension AppModel {
         now = clock()
         if today != old {
             rolloverDismissed = false
-            states = states   // nudge views; reload() below recomputes everything
             planner = PlannerState(day: today, graceUntil: planner.graceUntil)
         }
         reload()

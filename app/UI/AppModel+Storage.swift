@@ -16,14 +16,14 @@ extension AppModel {
     func revealFolder() { NSWorkspace.shared.activateFileViewerSelecting([settings.storageFolder]) }
     func reveal(_ urls: [URL]) { NSWorkspace.shared.activateFileViewerSelecting(urls) }
 
-    func retryFolder() { reload() }
-    func recreateFolder() { do { try store.ensureFolder() } catch { }; reload() }
+    func retryFolder() { reload(); editor?.retryIfNeeded(); retryOrphans() }
+    func recreateFolder() { do { try store.ensureFolder() } catch { }; reload(); editor?.retryIfNeeded(); retryOrphans() }
 
     // MARK: choose
     func chooseFolder() {
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
-        p.allowsMultipleSelection = false; p.prompt = "Choose"; p.message = "Choose where Daily Log saves your logs."
+        p.allowsMultipleSelection = false; p.prompt = "Choose"; p.message = "Choose where Gloamlog saves your logs."
         if p.runModal() == .OK, let url = p.url { changeFolder(to: url) }
     }
     func useDefaultFolder() { changeFolder(to: Settings.defaultFolder) }
@@ -40,14 +40,17 @@ extension AppModel {
     }
 
     func changeFolder(to url: URL) {
+        flushEditor { [weak self] in self?.performFolderChange(to: url) }      // what was typed lands in the OLD folder first
+    }
+
+    private func performFolderChange(to url: URL) {
         let new = url.standardizedFileURL, old = settings.storageFolder.standardizedFileURL
         if new.path == old.path { _ = alert("That's already your log folder.", "", ["OK"]); return }
         let fm = FileManager.default
         do { try fm.createDirectory(at: new, withIntermediateDirectories: true) } catch { }
         guard fm.isWritableFile(atPath: new.path) else {
-            _ = alert("Daily Log can't save to this folder.", "You may not have permission to write to \"\(new.lastPathComponent)\". Nothing was changed.", ["OK"]); return
+            _ = alert("Gloamlog can't save to this folder.", "You may not have permission to write to \"\(new.lastPathComponent)\". Nothing was changed.", ["OK"]); return
         }
-        flushEditor()
         let mine = dayFiles(in: old), theirs = Set(dayFiles(in: new))
         var result = StorageResult(text: "")
         if mine.isEmpty {
@@ -75,11 +78,13 @@ extension AppModel {
     }
 
     private func apply(_ url: URL) {
+        let day = editor?.day ?? today
+        editor?.abandon()                           // already flushed: nothing of the old page may be written into the new folder
         settings.storageFolder = url
-        store = LogStore(dir: url, sections: settings.sections)
+        store = AppModel.makeStore(dir: url, backupDir: backupDir)
         try? store.ensureFolder()
         reload()
-        editor = DayEditor(day: editor?.day ?? today, model: self)
+        openDay(day, force: true)
     }
 
     private func transfer(_ files: [String], from: URL, to: URL, move: Bool) -> StorageResult {
@@ -93,10 +98,36 @@ extension AppModel {
                 if move && fm.contentsEqual(atPath: src.path, andPath: dst.path) { try? fm.removeItem(at: src) }
             } catch { failed += 1 }
         }
-        var t = "\(move ? "Moved" : "Copied") \(Fmt.plural(copied, "log"))."
+        let images = transferAssets(from: from, to: to, move: move)
+        var t = "\(move ? "Moved" : "Copied") \(Fmt.plural(copied, "log"))"
+        t += images.copied > 0 ? " and \(Fmt.plural(images.copied, "image"))." : "."
         if !conflicts.isEmpty { t += " \(Fmt.plural(conflicts.count, "day")) already existed in the new folder and were left alone." }
-        if failed > 0 { t += " \(failed) could not be copied and stayed where they were." }
+        if failed + images.failed > 0 { t += " \(failed + images.failed) could not be copied and stayed where they were." }
         return StorageResult(text: t, conflicts: conflicts)
+    }
+
+    /// Pages reference images as assets/<file>: they move with the logs. Names carry a content hash, so an existing file
+    /// of the same name is the same picture and is left alone. A symlinked assets/ that leaves the folder is not followed.
+    private func transferAssets(from: URL, to: URL, move: Bool) -> (copied: Int, failed: Int) {
+        let fm = FileManager.default
+        let src = from.appendingPathComponent(AssetStore.folderName, isDirectory: true)
+        guard let root = AssetStore.realPath(from), let real = AssetStore.realPath(src), real.hasPrefix(root + "/"),
+              let names = try? fm.contentsOfDirectory(atPath: real) else { return (0, 0) }
+        let dstDir = to.appendingPathComponent(AssetStore.folderName, isDirectory: true)
+        var copied = 0, failed = 0
+        for n in names where !n.hasPrefix(".") && AssetStore.allowedExtensions.contains((n as NSString).pathExtension.lowercased()) {
+            let a = URL(fileURLWithPath: real).appendingPathComponent(n), b = dstDir.appendingPathComponent(n)
+            do {
+                try fm.createDirectory(at: dstDir, withIntermediateDirectories: true)
+                if fm.fileExists(atPath: b.path) {
+                    if move && fm.contentsEqual(atPath: a.path, andPath: b.path) { try? fm.removeItem(at: a) }
+                    continue
+                }
+                try fm.copyItem(at: a, to: b); copied += 1
+                if move && fm.contentsEqual(atPath: a.path, andPath: b.path) { try? fm.removeItem(at: a) }
+            } catch { failed += 1 }
+        }
+        return (copied, failed)
     }
 
     // MARK: login item (opt-in)
@@ -108,7 +139,7 @@ extension AppModel {
         do { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
         catch { loginMessage = "Couldn't change the login item: \(error.localizedDescription)" }
         settings.launchAtLogin = loginEnabled
-        if loginStatus == .requiresApproval { loginMessage = "Approve Daily Log in System Settings > General > Login Items." }
+        if loginStatus == .requiresApproval { loginMessage = "Approve Gloamlog in System Settings > General > Login Items." }
         else if loginMessage?.hasPrefix("Approve") == true { loginMessage = nil }
         objectWillChange.send()
     }

@@ -1,4 +1,4 @@
-// Heatmap.swift - 12-week activity grid (sidebar footer) and the last-7-days strip (menu bar popover).
+// Heatmap.swift - 12-week activity grid (in the streak popover on the page header) and the last-7-days strip (menu bar).
 // States differ by shape, not hue: filled square (logged), dash (skipped), bordered empty (missed),
 // faint dot (non-workday), ring (today), blank (future).
 import SwiftUI
@@ -40,6 +40,7 @@ enum HeatText {
 struct HeatmapView: View {
     @ObservedObject var model: AppModel
     var cell: CGFloat = 11, gap: CGFloat = 3
+    var onSelect: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.s2) {
@@ -47,7 +48,7 @@ struct HeatmapView: View {
                 ForEach(Array(model.heat.enumerated()), id: \.offset) { _, col in
                     VStack(spacing: gap) {
                         ForEach(col, id: \.day) { c in
-                            Button { if c.status != .future { model.select(.day(c.day)) } } label: {
+                            Button { if c.status != .future { onSelect(c.day) } } label: {
                                 HeatCellView(cell: c, size: cell).padding(1).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)

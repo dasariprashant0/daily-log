@@ -1,4 +1,4 @@
-// WeeklyReviewView.swift - read-only week summary built from saved files, with "Copy as markdown".
+// WeeklyReviewView.swift - read-only week summary built from saved pages, with "Copy as markdown".
 import SwiftUI
 
 struct WeeklyReviewView: View {
@@ -9,7 +9,8 @@ struct WeeklyReviewView: View {
             Column {
                 if let w = model.week {
                     header(w)
-                    if w.loggedCount == 0 && w.skippedCount == 0 { empty } else { content(w) }
+                    if w.loggedCount == 0 && w.skippedCount == 0 && !w.days.contains(where: { $0.doc?.hasContent == true }) { empty }
+                    else { content(w) }
                 }
             }
         }
@@ -54,66 +55,99 @@ struct WeeklyReviewView: View {
 
     @ViewBuilder private func content(_ w: WeekSummary) -> some View {
         VStack(alignment: .leading, spacing: Theme.s4) {
-            if model.weekGrouping == .day { ForEach(w.days, id: \.day) { d in DayBlock(model: model, d: d, sections: w.sections) } }
-            else { ForEach(w.sections) { s in SectionBlock(model: model, week: w, s: s) } }
+            if model.weekGrouping == .day {
+                ForEach(w.days, id: \.day) { d in WeekDayCard(model: model, d: d) }
+            } else {
+                ForEach(Array(w.sections.enumerated()), id: \.offset) { _, s in WeekSectionCard(model: model, section: s) }
+            }
         }
     }
 }
 
-private struct DayBlock: View {
-    @ObservedObject var model: AppModel
-    let d: WeekDay
-    let sections: [SectionDef]
+private struct ReviewCard<Content: View>: View {
+    @ViewBuilder let content: () -> Content
     var body: some View {
-        if d.status == .future || (d.entry == nil && d.status == .off) { EmptyView() } else {
-            VStack(alignment: .leading, spacing: Theme.s3) {
-                HStack {
-                    Text(model.shortDate(d.day)).font(Theme.font(15, .semibold)).foregroundColor(Theme.textPrimary)
-                    Spacer()
-                    if d.status == .skipped {
-                        Text("Skipped" + ((d.entry?.skipReason ?? "").isEmpty ? "" : " · \(d.entry?.skipReason ?? "")")).font(Theme.font(12)).foregroundColor(Theme.textSecondary)
-                    } else if d.entry == nil { Text("Not logged yet").font(Theme.font(12)).foregroundColor(Theme.textSecondary) }
-                    Button("Open") { model.select(.day(d.day)) }.buttonStyle(TextButtonStyle()).accessibilityLabel("Open \(model.spokenDate(d.day))")
-                }
-                if d.status != .skipped, let e = d.entry {
-                    ForEach(sections) { s in
-                        if let t = e.texts[s.id], !t.dlTrimmed.isEmpty {
-                            HStack(alignment: .top, spacing: Theme.s3) {
-                                Text(s.displayTitle).font(Theme.font(12, .semibold)).foregroundColor(Theme.textSecondary).frame(width: 112, alignment: .leading)
-                                ClampedText(text: t, lines: 4, font: Theme.font(14), color: Theme.textPrimary)
-                            }
-                        }
-                    }
-                }
-            }
+        VStack(alignment: .leading, spacing: Theme.s3, content: content)
             .padding(Theme.s4).frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.rect(Theme.radiusLg).fill(Theme.surface))
             .overlay(Theme.rect(Theme.radiusLg).stroke(Theme.border, lineWidth: 1))
             .accessibilityElement(children: .contain)
+    }
+}
+
+/// A page's markdown, cut at a block boundary with Show more when long (never mid-line).
+struct ClampedMarkdown: View {
+    let markdown: String
+    let store: AssetStore
+    var maxLines: Double = 9
+    @StateObject private var open = Box(false)
+
+    private func clamp(_ all: [MDBlock]) -> (shown: [MDBlock], long: Bool) {
+        var used = 0.0, cut = all.count
+        for (i, b) in all.enumerated() {
+            used += b.estimatedLines
+            if used > maxLines && i > 0 { cut = i; break }
+        }
+        var shown = Array(all.prefix(cut))
+        while case .heading? = shown.last, cut < all.count { shown.removeLast() }       // no heading left hanging
+        return (shown, cut < all.count)
+    }
+
+    var body: some View {
+        let all = MDParse.blocks(markdown)
+        let c = clamp(all)
+        VStack(alignment: .leading, spacing: 4) {
+            MarkdownBlocksView(blocks: open.value ? all : c.shown, store: store, size: 14, compact: true)
+            if c.long { Button(open.value ? "Show less" : "Show more") { open.value.toggle() }.buttonStyle(TextButtonStyle()) }
         }
     }
 }
 
-private struct SectionBlock: View {
+private struct WeekDayCard: View {
     @ObservedObject var model: AppModel
-    let week: WeekSummary
-    let s: SectionDef
+    let d: WeekDay
     var body: some View {
-        let items = week.items(forSection: s.id)
-        VStack(alignment: .leading, spacing: Theme.s3) {
-            Text(s.displayTitle).font(Theme.font(15, .semibold)).foregroundColor(Theme.textPrimary)
-            if items.isEmpty { Text("Nothing this week.").font(Theme.font(13)).foregroundColor(Theme.textSecondary) }
-            ForEach(items, id: \.day) { it in
-                HStack(alignment: .top, spacing: Theme.s3) {
-                    Text(DayKey.format(it.day, "EEE d", model.cal)).font(Theme.font(12)).monospacedDigit()
-                        .foregroundColor(Theme.textSecondary).frame(width: 56, alignment: .leading)
-                    ClampedText(text: it.text, lines: 4, font: Theme.font(14), color: Theme.textPrimary)
+        let hasText = (d.doc?.hasContent ?? false) && d.status != .skipped
+        if d.status == .future || (!hasText && d.status != .skipped && d.status != .missed) { EmptyView() }
+        else if d.status == .missed && !model.isWorkday(d.day) { EmptyView() }
+        else {
+            ReviewCard {
+                HStack {
+                    Text(model.shortDate(d.day)).font(Theme.font(15, .semibold)).foregroundColor(Theme.textPrimary)
+                    Spacer()
+                    if d.status == .skipped {
+                        let r = d.doc?.skipReason ?? ""
+                        Text("Skipped" + (r.isEmpty ? "" : " · \(r)")).font(Theme.font(12)).foregroundColor(Theme.textSecondary)
+                    } else if !hasText {
+                        Text("Not logged yet").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
+                    } else if d.status == .partial {
+                        Text("\(d.doc?.words ?? 0) of \(model.minWords) words").font(Theme.font(12)).foregroundColor(Theme.textSecondary).monospacedDigit()
+                    }
+                    Button("Open") { model.select(.day(d.day)) }.buttonStyle(TextButtonStyle())
+                        .accessibilityLabel("Open \(model.spokenDate(d.day))")
+                }
+                if hasText, let doc = d.doc {
+                    ClampedMarkdown(markdown: MarkdownBody.pruneEmptySections(doc.body), store: model.store.assets)
                 }
             }
         }
-        .padding(Theme.s4).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.rect(Theme.radiusLg).fill(Theme.surface))
-        .overlay(Theme.rect(Theme.radiusLg).stroke(Theme.border, lineWidth: 1))
-        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct WeekSectionCard: View {
+    @ObservedObject var model: AppModel
+    let section: WeekSection
+    var body: some View {
+        ReviewCard {
+            Text(cleanHeading(section.title)).font(Theme.font(15, .semibold)).foregroundColor(Theme.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(Array(section.items.enumerated()), id: \.offset) { _, it in
+                HStack(alignment: .top, spacing: Theme.s3) {
+                    Text(DayKey.format(it.day, "EEE d", model.cal)).font(Theme.font(12)).monospacedDigit()
+                        .foregroundColor(Theme.textSecondary).frame(width: 56, alignment: .leading)
+                    ClampedMarkdown(markdown: it.text, store: model.store.assets)
+                }
+            }
+        }
     }
 }

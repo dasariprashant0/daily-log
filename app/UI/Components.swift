@@ -1,4 +1,4 @@
-// Components.swift - banners, status chip, progress ring, heat cell shapes shared across screens.
+// Components.swift - banners and small shared pieces.
 import SwiftUI
 
 enum BannerKind {
@@ -51,48 +51,6 @@ struct Banner<Actions: View>: View {
 extension Banner where Actions == EmptyView {
     init(_ kind: BannerKind, _ text: String, detail: String? = nil, onDismiss: (() -> Void)? = nil) {
         self.init(kind, text, detail: detail, onDismiss: onDismiss) { EmptyView() }
-    }
-}
-
-struct StatusChip: View {
-    enum Kind { case none, draft, saved, unsaved, error }
-    let kind: Kind
-    let text: String
-    var icon: String {
-        switch kind { case .none: return "circle"; case .draft: return "pencil.circle"; case .saved: return "checkmark.circle.fill"
-        case .unsaved: return "circle.lefthalf.filled"; case .error: return "exclamationmark.triangle" }
-    }
-    var color: Color {
-        switch kind { case .saved: return Theme.accentText; case .error: return Theme.danger; default: return Theme.textSecondary }
-    }
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).font(Theme.font(12)).foregroundColor(color).accessibilityHidden(true)
-            Text(text).font(Theme.font(12, .medium)).foregroundColor(color).monospacedDigit()
-        }
-        .accessibilityElement(children: .ignore).accessibilityLabel(text)
-    }
-}
-
-struct ProgressRing: View {
-    let filled: Int, total: Int
-    @Environment(\.accessibilityReduceMotion) private var reduce
-    var body: some View {
-        let frac = total == 0 ? 0 : Double(filled) / Double(total)
-        ZStack {
-            Circle().stroke(Theme.borderStrong, lineWidth: 3)
-            Circle().trim(from: 0, to: CGFloat(frac)).stroke(Theme.accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .animation(Theme.animation(.easeOut(duration: 0.24), reduce: reduce), value: filled)
-            if filled >= total && total > 0 {
-                Image(systemName: "checkmark").font(Theme.font(11, .bold)).foregroundColor(Theme.accent)
-            } else {
-                Text("\(filled)").font(Theme.font(11, .semibold)).foregroundColor(Theme.textPrimary).monospacedDigit()
-            }
-        }
-        .frame(width: 28, height: 28)
-        .accessibilityElement(children: .ignore).accessibilityLabel("Progress")
-        .accessibilityValue("\(filled) of \(total) sections filled")
     }
 }
 

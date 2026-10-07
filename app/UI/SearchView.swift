@@ -1,4 +1,4 @@
-// SearchView.swift - results for the sidebar search (saved files only, drafts excluded).
+// SearchView.swift - results for the sidebar search (saved pages only). Each hit shows the heading it sits under.
 import SwiftUI
 
 struct SearchView: View {
@@ -19,9 +19,9 @@ struct SearchView: View {
                             .font(Theme.font(13)).foregroundColor(Theme.textSecondary).monospacedDigit()
                     }
                     HStack {
-                        Picker("Section", selection: $model.searchSection) {
-                            Text("All sections").tag(String?.none)
-                            ForEach(model.settings.sections) { s in Text(s.displayTitle).tag(String?.some(s.id)) }
+                        Picker("Heading", selection: $model.searchHeading) {
+                            Text("All headings").tag(String?.none)
+                            ForEach(model.searchHeadingChoices, id: \.self) { h in Text(cleanHeading(h)).tag(String?.some(h)) }
                         }.fixedSize()
                         Spacer()
                     }.padding(.top, Theme.s2)
@@ -67,13 +67,14 @@ private struct HitRow: View {
         }
         return a
     }
+    private var headingText: String { hit.heading.map { cleanHeading($0) } ?? "Notes" }
 
     var body: some View {
         HoverReader { hovering in
             Button { model.open(hit: hit) } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Theme.s3) {
-                    Text(displayTitle(of: hit.sectionTitle)).font(Theme.font(12, .semibold)).foregroundColor(Theme.textSecondary)
-                        .frame(width: 120, alignment: .leading).lineLimit(1)
+                    Text(headingText).font(Theme.font(12, .semibold)).foregroundColor(Theme.textSecondary)
+                        .frame(width: 130, alignment: .leading).lineLimit(1)
                     Text(snippet).font(Theme.font(13)).foregroundColor(Theme.textSecondary).lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -82,7 +83,7 @@ private struct HitRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(model.spokenDate(hit.day)), \(displayTitle(of: hit.sectionTitle)), \(hit.snippet)")
+            .accessibilityLabel("\(model.spokenDate(hit.day)), \(headingText), \(hit.snippet)")
         }
     }
 }

@@ -20,6 +20,7 @@ struct MainView: View {
             case .skip(let day): SkipSheet(model: model, day: day)
             case .onboarding: OnboardingView(model: model)
             case .whatsNew: WhatsNewSheet(model: model)
+            case .restore(let day): RestoreVersionSheet(model: model, day: day)
             }
         }
     }
@@ -29,7 +30,7 @@ struct DetailRouter: View {
     @ObservedObject var model: AppModel
     var body: some View {
         switch model.selection {
-        case .day: DayPage(model: model, editor: model.editor).id(model.editor.day)
+        case .day: DayPage(model: model, editor: model.editor)
         case .week: WeeklyReviewView(model: model)
         case .search: SearchView(model: model)
         }
@@ -40,10 +41,11 @@ struct WhatsNewSheet: View {
     @ObservedObject var model: AppModel
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.s4) {
-            Text("What's new in 0.2").font(Theme.font(22, .semibold)).foregroundColor(Theme.textPrimary)
+            Text("What's new in 0.3").font(Theme.font(22, .semibold)).foregroundColor(Theme.textPrimary)
             VStack(alignment: .leading, spacing: Theme.s2) {
-                ForEach(["Skip a day without breaking your streak.", "Gentle mode and notifications.",
-                         "Menu bar item, search, weekly review.", "Choose your own sections and folder."], id: \.self) { s in
+                ForEach(["One page per day: headings, lists, to-dos and images.", "It saves as you write. There is no Save button.",
+                         "Your five prompts are now a template you can edit in Settings.",
+                         "Earlier versions of each day are kept, so nothing is lost."], id: \.self) { s in
                     HStack(alignment: .firstTextBaseline, spacing: Theme.s2) {
                         Image(systemName: "checkmark").font(Theme.font(11, .bold)).foregroundColor(Theme.accent).accessibilityHidden(true)
                         Text(s).font(Theme.font(13)).foregroundColor(Theme.textPrimary)
@@ -57,7 +59,7 @@ struct WhatsNewSheet: View {
                 Button("Done") { done() }.buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
             }
         }
-        .padding(Theme.s8).frame(width: 440).background(Theme.surface)
+        .padding(Theme.s8).frame(width: 460).background(Theme.surface)
     }
-    private func done() { model.defaults.set(true, forKey: "dailylog.whatsNew.0.2"); model.sheet = nil }
+    private func done() { model.defaults.set(true, forKey: AppModel.whatsNewKey); model.sheet = nil }
 }

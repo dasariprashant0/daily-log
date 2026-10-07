@@ -59,7 +59,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                                 withCompletionHandler done: @escaping () -> Void) {
         let action = response.actionIdentifier
         DispatchQueue.main.async { [weak self] in
-            if action == "snooze" { self?.model?.snooze() } else { self?.model?.showMainWindow(activate: true) }
+            if action == "snooze" { self?.model?.snooze() }
+            else if let m = self?.model { m.showMainWindow(activate: true); m.openDay(m.today, focus: true) }
             done()
         }
     }

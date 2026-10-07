@@ -38,7 +38,6 @@ enum Theme {
     static let s6: CGFloat = 24, s8: CGFloat = 32, s10: CGFloat = 40, s12: CGFloat = 48
     static let radiusSm: CGFloat = 4, radiusMd: CGFloat = 6, radiusLg: CGFloat = 10
     static let columnMax: CGFloat = 720
-    static let saveBarHeight: CGFloat = 64
 
     /// One place for Reduce Motion: pass the environment flag, get nil (instant) when set.
     static func animation(_ a: Animation?, reduce: Bool) -> Animation? { reduce ? nil : a }
@@ -75,16 +74,14 @@ enum Fmt {
     static func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
 }
 
-extension SectionDef {
-    /// Title without leading emoji/symbols ("📝 What I did" -> "What I did"); file keeps the full title.
-    var displayTitle: String {
-        var t = Substring(title)
-        while let f = t.first, !(f.isLetter || f.isNumber) { t = t.dropFirst() }
-        let s = t.trimmingCharacters(in: .whitespaces)
-        return s.isEmpty ? title : s
-    }
+/// Heading text for display: leading emoji/symbols and spaces dropped ("📌 To do next" -> "To do next").
+/// Files keep the raw heading; only the chrome shows the cleaned one.
+func cleanHeading(_ raw: String) -> String {
+    var t = Substring(raw)
+    while let f = t.first, !(f.isLetter || f.isNumber) { t = t.dropFirst() }
+    let s = t.trimmingCharacters(in: .whitespaces)
+    return s.isEmpty ? raw.dlTrimmed : s
 }
-func displayTitle(of raw: String) -> String { SectionDef(id: "x", title: raw).displayTitle }
 
 // MARK: button styles
 
@@ -121,4 +118,10 @@ struct TextButtonStyle: ButtonStyle {
             .font(Theme.font(13, .semibold)).foregroundColor(enabled ? color : Theme.textTertiary)
             .opacity(configuration.isPressed ? 0.6 : 1).contentShape(Rectangle())
     }
+}
+
+/// Snapshot harness flips this to draw static text instead of the WKWebView editor (WebKit does not render offscreen here).
+struct SnapshotModeKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var snapshotMode: Bool { get { self[SnapshotModeKey.self] } set { self[SnapshotModeKey.self] = newValue } }
 }

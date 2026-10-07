@@ -3,12 +3,12 @@ import SwiftUI
 
 extension AppModel {
     var menuIcon: (symbol: String, title: String) {
-        if folderProblem != nil { return ("exclamationmark.triangle", "Daily Log: can't save, folder unavailable") }
+        if folderProblem != nil { return ("exclamationmark.triangle", "Gloamlog: can't save, folder unavailable") }
         switch todayStatus {
-        case .logged: return ("checkmark.circle", "Daily Log: today logged")
-        case .skipped: return ("moon.zzz", "Daily Log: skipped today")
-        case .off: return ("circle.dashed", "Daily Log: no log needed today")
-        default: return isDue ? ("pencil.circle.fill", "Daily Log: time to write up today") : ("book.closed", "Daily Log: today not yet logged")
+        case .logged: return ("checkmark.circle", "Gloamlog: today logged")
+        case .skipped: return ("moon.zzz", "Gloamlog: skipped today")
+        case .off: return ("circle.dashed", "Gloamlog: no log needed today")
+        default: return isDue ? ("pencil.circle.fill", "Gloamlog: time to write up today") : ("book.closed", "Gloamlog: today not yet logged")
         }
     }
     var menuStateLine: String {
@@ -46,16 +46,16 @@ struct MenuBarView: View {
             }.padding(Theme.s3)
             divider
             VStack(spacing: 2) {
-                MenuButton(title: "Open Daily Log", shortcut: "⌘O", primary: true) { open() }.keyboardShortcut("o")
+                MenuButton(title: "Open Gloamlog", shortcut: "⌘O", primary: true) { open() }.keyboardShortcut("o")
                 if model.isDue { MenuButton(title: model.snoozeLabel, disabled: !model.canSnooze) { model.snooze() } }
                 MenuButton(title: model.canSkipToday ? "Skip today…" : "Today is already logged", disabled: !model.canSkipToday) {
-                    open(); model.requestSkip()
+                    open(); model.requestSkip(day: model.today)
                 }
             }.padding(Theme.s2)
             divider
             VStack(spacing: 2) {
                 MenuButton(title: "Settings…", shortcut: "⌘,") { NSApp.activate(ignoringOtherApps: true); NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
-                MenuButton(title: "Quit Daily Log", shortcut: "⌘Q") { NSApp.terminate(nil) }
+                MenuButton(title: "Quit Gloamlog", shortcut: "⌘Q") { NSApp.terminate(nil) }
             }.padding(Theme.s2)
         }
         .frame(width: 300).background(Theme.surface)

@@ -1,4 +1,4 @@
-// Usage: make-icon <out.png> [simple] [pixels]   -- draws the 1024px Daily Log icon (docs/DESIGN_SYSTEM.md section 9).
+// Usage: make-icon <out.png> [simple] [pixels]   -- draws the 1024px Gloamlog icon (docs/DESIGN_SYSTEM.md section 9).
 // "simple" omits the ruled lines and sheet shadow (for pixel sizes <= 64).
 import Foundation
 import CoreGraphics

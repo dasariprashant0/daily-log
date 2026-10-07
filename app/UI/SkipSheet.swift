@@ -62,9 +62,7 @@ struct SkipSheet: View {
                     }
                 }
             }
-            if model.draftDays.contains(day) {
-                Text("Your draft for this day is kept, not deleted.").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
-            }
+            Text("A day with writing can't be skipped, so nothing you wrote is touched.").font(Theme.font(12)).foregroundColor(Theme.textSecondary)
             if let e = form.error { Text(e).font(Theme.font(13)).foregroundColor(Theme.danger) }
             HStack {
                 Spacer()
@@ -78,10 +76,9 @@ struct SkipSheet: View {
     }
 
     private func commit() {
-        do {
-            try model.skip(day: day, through: isRange ? throughKey : nil, reason: finalReason)
-            model.sheet = nil
-        } catch let e as SkipFailure { form.error = e.text } catch { form.error = error.localizedDescription }
+        model.skip(day: day, through: isRange ? throughKey : nil, reason: finalReason) { failure in
+            if let f = failure { form.error = f.text } else { model.sheet = nil }
+        }
     }
 }
 
