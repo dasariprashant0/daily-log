@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily Log editor: tests</title>
+<style>
+  body { font: 13px/1.45 -apple-system, system-ui, sans-serif; margin: 16px; color: #1b201e; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  #frame { position: absolute; left: -9999px; width: 816px; height: 600px; }
+  #frame iframe { width: 816px; height: 600px; border: 0; display: block; }
+  pre { background: #f0f2f0; padding: 10px; border-radius: 8px; overflow: auto; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Daily Log editor: tests (fixtures, bridge, behaviour)</h1>
+<div id="frame"></div>
+<pre id="out">running...</pre>
+<script type="module">
+import { mountEditor, sleep } from '../dev/harness.js'
+import { FIXTURES } from './fixtures.js'
+
+const lines = []
+const results = []
+const say = (s = '') => {
+  lines.push(s)
+  document.getElementById('out').textContent = lines.join('\n')
+}
+const check = (name, ok, detail = '') => {
+  results.push({ name, ok: !!ok, detail })
+  say(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  ' + detail : ''}`)
+}
+
+// Line diff (LCS), enough to show what normalisation changed.
+function diff(a, b) {
+  const x = a.split('\n'), y = b.split('\n')
+  const dp = Array.from({ length: x.length + 1 }, () => new Uint16Array(y.length + 1))
+  for (let i = x.length - 1; i >= 0; i--)
+    for (let j = y.length - 1; j >= 0; j--)
+      dp[i][j] = x[i] === y[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+  const out = []
+  let i = 0, j = 0
+  while (i < x.length && j < y.length) {
+    if (x[i] === y[j]) { i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) out.push('-' + JSON.stringify(x[i++]))
+    else out.push('+' + JSON.stringify(y[j++]))
+  }
+  while (i < x.length) out.push('-' + JSON.stringify(x[i++]))
+  while (j < y.length) out.push('+' + JSON.stringify(y[j++]))
+  return out
+}
+// Words (letters/digits) that exist in `a` more often than in `b`: a cheap "did we lose text?" check.
+function lostWords(a, b) {
+  const count = (t) => {
+    const m = new Map()
+    for (const w of t.match(/[\p{L}\p{N}]+/gu) || []) m.set(w, (m.get(w) || 0) + 1)
+    return m
+  }
+  const ca = count(a), cb = count(b)
+  return [...ca].filter(([w, n]) => (cb.get(w) || 0) < n).map(([w]) => w)
+}
+
+let uploadMode = 'ok'
+const oldSafari = location.search.includes('oldsafari') // ?oldsafari: run everything with regex lookbehind and navigator.clipboard missing
+const host = await mountEditor(document.getElementById('frame'), {
+  upload: () => uploadMode,
+  debug: { uploadTimeoutMs: 600, noLookbehind: oldSafari && (location.search.includes('blind') ? 'blind' : true), noClipboard: oldSafari } // the real upload timeout is 60 s
+})
+if (oldSafari) say('** old-Safari simulation: no regex lookbehind, no navigator.clipboard **')
+await host.ready
+const api = host.api
+const win = host.win
+const view = win.__DL_DEBUG__.view
+const pm = () => win.document.querySelector('.ProseMirror')
+const msgs = (type) => host.messages.filter((m) => m.type === type)
+const lastChange = () => msgs('change').at(-1)
+const PNG = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0))
+const pngFile = (name = 'shot.png', type = 'image/png') => new win.File([PNG], name, { type })
+const toastText = () => win.document.querySelector('.dl-toast')
+
+say('== contract surface')
+const want = ['_resolveUpload', 'focus', 'getMarkdown', 'insertMarkdown', 'isRawFallback', 'setMarkdown', 'setPlaceholder', 'setReadOnly', 'setTheme']
+check('window.DailyLogEditor has exactly the contract methods (+ isRawFallback)', JSON.stringify(Object.keys(api).sort()) === JSON.stringify(want))
+check('ready was posted once', msgs('ready').length === 1)
+check('default placeholder', (api.setMarkdown(''), win.document.querySelector('.crepe-placeholder')?.dataset.placeholder === 'Write about your day, or press / for commands'))
+
+say('')
+say('== fixtures: serialize(parse(x)) is idempotent after the first normalisation')
+const normalised = []
+for (const name of FIXTURES) {
+  const x = await (await fetch(`./fixtures/${name}.md`)).text()
+  const t0 = performance.now()
+  api.setMarkdown(x, { cursor: 'start' })
+  const t1 = performance.now()
+  const y = api.getMarkdown()
+  if (name === 'long') say(`   info: long.md (${x.length} chars, ${x.split('\n').length} lines): setMarkdown ${Math.round(t1 - t0)} ms, getMarkdown ${Math.round(performance.now() - t1)} ms`)
+  api.setMarkdown(y, { cursor: 'start' })
+  const z = api.getMarkdown()
+  api.setMarkdown(z, { cursor: 'start' })
+  const w = api.getMarkdown()
+  const idem = y === z && z === w
+  check(`idempotent: ${name}`, idem, idem ? '' : 'y!=z or z!=w')
+  if (!idem) say('   ' + diff(y, z).slice(0, 8).join('\n   '))
+  const lost = lostWords(x, y)
+  // edge-cases deliberately holds link-reference definitions: their labels vanish when the links are inlined
+  check(`no text lost: ${name}`, name === 'edge-cases' ? lost.every((w) => ['ref', '2'].includes(w)) : lost.length === 0, lost.slice(0, 8).join(','))
+  if (x.trim() !== y.trim()) normalised.push([name, diff(x.trim(), y.trim())])
+}
+
+say('')
+say('== bridge: programmatic calls never emit change, user edits emit one debounced change')
+let before = msgs('change').length
+api.setMarkdown('Hello\n', { cursor: 'end' })
+api.insertMarkdown('Inserted at the cursor.\n', 'cursor')
+api.insertMarkdown('Inserted at the start.\n', 'start')
+api.insertMarkdown('Inserted at the end.\n', 'end')
+api.setPlaceholder('Another placeholder')
+api.setTheme('dark'); api.setTheme('light')
+api.setReadOnly(true); api.setReadOnly(false)
+api.focus()
+await sleep(800)
+check('programmatic calls emit no change', msgs('change').length === before, `change count ${before} -> ${msgs('change').length}`)
+check('insertMarkdown start/end/cursor land in the right place', /^Inserted at the start\.\n\n[\s\S]*Inserted at the end\.\n$/.test(api.getMarkdown()) && api.getMarkdown().includes('Inserted at the cursor.'), JSON.stringify(api.getMarkdown()))
+
+api.setMarkdown('Hello\n', { cursor: 'end' })
+before = msgs('change').length
+for (const ch of ['a', 'b', 'c']) { view.dispatch(view.state.tr.insertText(ch)); await sleep(60) }
+check('no change before the 300 ms debounce', msgs('change').length === before)
+await sleep(500)
+check('3 quick user edits -> exactly one change', msgs('change').length === before + 1 && lastChange().markdown === 'Helloabc\n', JSON.stringify(lastChange()?.markdown))
+api.setMarkdown('Other day\n')
+await sleep(500)
+check('stale edit timer does not leak into a new setMarkdown', msgs('change').length === before + 1)
+view.dispatch(view.state.tr.insertText('x')); api.setMarkdown('Third day\n'); await sleep(500)
+check('edit then setMarkdown inside the debounce window: no change for the old day', msgs('change').length === before + 1)
+
+say('')
+say('== images: paste, drop, bridge upload, relative path, dlasset display')
+api.setMarkdown('Hello\n', { cursor: 'end', focus: true })
+uploadMode = 'ok'
+{
+  const dt = new win.DataTransfer(); dt.items.add(pngFile())
+  pm().dispatchEvent(new win.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+  await sleep(700)
+  const up = msgs('uploadImage')
+  check('paste: one uploadImage message with name, mime and base64', up.length === 1 && up[0].name === 'shot.png' && up[0].mime === 'image/png' && typeof up[0].id === 'string' && atob(up[0].dataBase64).length === PNG.length, JSON.stringify({ ...up[0], dataBase64: up[0]?.dataBase64?.slice(0, 12) + '...' }))
+  check('paste: markdown keeps the RELATIVE path', api.getMarkdown().includes('![](assets/mock.png)'), JSON.stringify(api.getMarkdown()))
+  check('paste: change carries the image (user edit)', lastChange()?.markdown.includes('![](assets/mock.png)'))
+  const img = win.document.querySelector('.milkdown-image-block img')
+  check('paste: displayed through dlasset://local/assets/...', img?.getAttribute('src') === 'dlasset://local/assets/mock.png', img?.getAttribute('src'))
+}
+{
+  api.setMarkdown('Drop here\n\nSecond paragraph\n', { cursor: 'end' })
+  const p = pm().querySelector('p').getBoundingClientRect()
+  const dt = new win.DataTransfer(); dt.items.add(pngFile('dropped.png'))
+  const n = msgs('uploadImage').length
+  pm().dispatchEvent(new win.DragEvent('drop', { dataTransfer: dt, clientX: p.left + 20, clientY: p.top + 5, bubbles: true, cancelable: true }))
+  await sleep(700)
+  check('drop: uploadImage message', msgs('uploadImage').length === n + 1 && msgs('uploadImage').at(-1).name === 'dropped.png')
+  check('drop: image lands between blocks, the sentence stays whole', /!\[\]\(assets\/mock\.png\)/.test(api.getMarkdown()) && api.getMarkdown().includes('Drop here\n'), JSON.stringify(api.getMarkdown()))
+}
+{
+  const dropped = new win.DragEvent('drop', { dataTransfer: (() => { const d = new win.DataTransfer(); d.items.add(pngFile()); return d })(), bubbles: true, cancelable: true })
+  win.document.body.dispatchEvent(dropped)
+  check('drop outside the editor is cancelled (never navigates the web view)', dropped.defaultPrevented)
+}
+{
+  api.setMarkdown('Err\n', { cursor: 'end', focus: true })
+  uploadMode = 'error'
+  const n = msgs('change').length
+  const dt = new win.DataTransfer(); dt.items.add(pngFile('bad.png'))
+  pm().dispatchEvent(new win.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+  await sleep(700)
+  check('upload error: toast shows the host message, nothing inserted', toastText().dataset.show === 'true' && toastText().textContent.includes('Mock host says') && !api.getMarkdown().includes('!['), toastText().textContent)
+  check('upload error: no change emitted', msgs('change').length === n)
+  uploadMode = 'never'
+  const dt2 = new win.DataTransfer(); dt2.items.add(pngFile('slow.png'))
+  pm().dispatchEvent(new win.ClipboardEvent('paste', { clipboardData: dt2, bubbles: true, cancelable: true }))
+  await sleep(1100)
+  check('upload never answered: times out with a toast', /too long/.test(toastText().textContent), toastText().textContent)
+  uploadMode = 'ok'
+  const dt3 = new win.DataTransfer(); dt3.items.add(new win.File([PNG], 'doc.pdf', { type: 'application/pdf' }))
+  pm().dispatchEvent(new win.ClipboardEvent('paste', { clipboardData: dt3, bubbles: true, cancelable: true }))
+  await sleep(300)
+  check('non-image file is not uploaded', !msgs('uploadImage').some((m) => m.name === 'doc.pdf'))
+  const big = new win.File([new Uint8Array(21 * 1024 * 1024)], 'huge.png', { type: 'image/png' })
+  const dt4 = new win.DataTransfer(); dt4.items.add(big)
+  pm().dispatchEvent(new win.ClipboardEvent('paste', { clipboardData: dt4, bubbles: true, cancelable: true }))
+  await sleep(300)
+  check('image over 20 MB is refused before sending', !msgs('uploadImage').some((m) => m.name === 'huge.png') && /20 MB/.test(toastText().textContent), toastText().textContent)
+}
+
+say('')
+say('== escaping')
+{
+  const put = (text) => { api.setMarkdown('x\n', { cursor: 'start' }); view.dispatch(view.state.tr.insertText(text, 1)); return api.getMarkdown() }
+  check('R&D, Q&A and AT&T stay readable', put('R&D Q&A AT&T') === 'R&D Q&A AT&Tx\n', JSON.stringify(put('R&D Q&A AT&T')))
+  check('a literal &amp; typed by the user stays escaped (it must not turn into "&" on reload)', put('&amp; &#35; &copy;') === '\\&amp; \\&#35; \\&copy;x\n', JSON.stringify(put('&amp; &#35; &copy;')))
+  check('a backslash before & survives', put('a\\&b') === 'a\\\\&bx\n', JSON.stringify(put('a\\&b')))
+  const again = put('R&D and &amp;')
+  api.setMarkdown(again)
+  check('and the result is stable on reload', api.getMarkdown() === again, JSON.stringify(api.getMarkdown()))
+}
+
+say('')
+say('== paste')
+{
+  const paste = (data) => { const dt = new win.DataTransfer(); for (const [t, v] of Object.entries(data)) dt.setData(t, v); pm().dispatchEvent(new win.ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })) }
+  api.setMarkdown('', { focus: true })
+  paste({ 'text/plain': '# Title\n\n- a\n- b\n' })
+  await sleep(200)
+  check('plain text is parsed as markdown', api.getMarkdown() === '# Title\n\n- a\n- b\n', JSON.stringify(api.getMarkdown()))
+  api.setMarkdown('', { focus: true })
+  paste({ 'text/html': '<h2>Hi</h2><p>x <a href="https://example.com">l</a></p><img src="https://example.com/p.png" alt="remote">', 'text/plain': 'Hi x l' })
+  await sleep(300)
+  check('rich text keeps structure, remote images are dropped', api.getMarkdown() === '## Hi\n\nx [l](https://example.com)\n', JSON.stringify(api.getMarkdown()))
+}
+
+say('')
+say('== markdown shortcuts (typed one character at a time through ProseMirror handleTextInput, like real typing)')
+{
+  const typeText = async (text) => {
+    for (const ch of text) {
+      const { from, to } = view.state.selection
+      if (!view.someProp('handleTextInput', (f) => f(view, from, to, ch, () => view.state.tr.insertText(ch, from, to)))) view.dispatch(view.state.tr.insertText(ch, from, to))
+      await sleep(30) // Crepe re-places the caret in a rAF after a list item mounts (16 ms here): type at human speed
+    }
+  }
+  const cases = [
+    ['# Title', '# Title\n'], ['## Sub', '## Sub\n'], ['### Third', '### Third\n'],
+    ['- item', '- item\n'], ['* star', '- star\n'], ['1. one', '1. one\n'],
+    ['[] todo', '- [ ] todo\n'], ['[ ] todo', '- [ ] todo\n'], ['[x] done', '- [x] done\n'], ['- [ ] nested', '- [ ] nested\n'],
+    ['> quote', '> quote\n'], ['```js x', '```js\nx\n```\n'], ['---', '---\n'],
+    ['**bold** x', '**bold** x\n'], ['*it* x', '*it* x\n'], ['`c` x', '`c` x\n'], ['~~s~~ x', '~~s~~ x\n']
+  ]
+  for (const [typed, want] of cases) {
+    api.setMarkdown('', { focus: true })
+    await typeText(typed)
+    await sleep(30)
+    check(`typing ${JSON.stringify(typed)}`, api.getMarkdown() === want, JSON.stringify(api.getMarkdown()))
+  }
+  api.setMarkdown('', { focus: true })
+  await typeText('/')
+  await sleep(400)
+  const menu = win.document.querySelector('.milkdown-slash-menu')
+  check('typing "/" on an empty line opens the slash menu', menu && menu.dataset.show === 'true')
+  const items = [...win.document.querySelectorAll('.milkdown-slash-menu li')].map((li) => li.textContent.trim())
+  check('slash menu offers text, H1-H3, quote, divider, lists, image, code, table', ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Quote', 'Divider', 'Bullet List', 'Ordered List', 'Task List', 'Image', 'Code', 'Table'].every((l) => items.includes(l)) && !items.includes('Math'), items.join(','))
+  await typeText('tab')
+  await sleep(300)
+  win.document.querySelector('.ProseMirror').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  await sleep(300)
+  check('picking "Table" from the menu inserts a table', /^\|.*\|\n\|.*\|\n/.test(api.getMarkdown()), JSON.stringify(api.getMarkdown()))
+  api.setMarkdown('x\n', { cursor: 'end', focus: true })
+  view.dispatch(view.state.tr.setSelection(view.state.selection.constructor.create(view.state.doc, 1, 2)))
+  await sleep(300)
+  const tb = win.document.querySelector('.milkdown-toolbar')
+  check('selecting text shows the formatting toolbar (bold, italic, strike, code, link)', tb && tb.dataset.show === 'true' && tb.querySelectorAll('.toolbar-item').length === 5, tb && tb.dataset.show + ' ' + tb.querySelectorAll('.toolbar-item').length)
+}
+
+say('')
+say('== keyboard')
+{
+  const key = (k, extra = {}) => pm().dispatchEvent(new win.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...extra }))
+  api.setMarkdown('abc\n', { cursor: 'end', focus: true })
+  key('Tab')
+  check('Tab does not type spaces into a paragraph', api.getMarkdown() === 'abc\n', JSON.stringify(api.getMarkdown()))
+  api.setMarkdown('- one\n- two\n', { cursor: 'end', focus: true })
+  key('Tab')
+  check('Tab nests a list item', api.getMarkdown() === '- one\n  - two\n', JSON.stringify(api.getMarkdown()))
+  key('Tab', { shiftKey: true })
+  check('Shift-Tab lifts it again', api.getMarkdown() === '- one\n- two\n', JSON.stringify(api.getMarkdown()))
+}
+
+say('')
+say('== calls before ready are queued, not lost')
+{
+  const early = await mountEditor(document.getElementById('frame'))
+  while (!early.win.DailyLogEditor) await sleep(5)
+  early.win.DailyLogEditor.setMarkdown('Early text\n')
+  early.win.DailyLogEditor.setTheme('dark')
+  const before = early.win.DailyLogEditor.getMarkdown()
+  check('isRawFallback() before ready is false', early.win.DailyLogEditor.isRawFallback() === false)
+  await early.ready
+  check('getMarkdown before ready returns what the host set (never an empty file)', before === 'Early text\n', JSON.stringify(before))
+  check('queued setMarkdown/setTheme were applied after ready', early.api.getMarkdown() === 'Early text\n' && early.win.document.documentElement.dataset.theme === 'dark')
+  check('queued calls emit no change', early.messages.filter((m) => m.type === 'change').length === 0)
+}
+
+say('')
+say('== layout: the first block sits at the top, focused or not (a widget div precedes it)')
+{
+  const fresh = await mountEditor(document.getElementById('frame'))
+  await fresh.ready
+  fresh.api.setMarkdown('## First heading\n\nSome text.\n\n## Second heading\n\n![](assets/x.png)\n')
+  await sleep(300)
+  const fw = fresh.win
+  const root = fw.document.querySelector('.ProseMirror')
+  const probe = (label) => {
+    const lead = root.firstElementChild
+    const h = root.querySelectorAll('h2')
+    const top = Math.round(h[0].getBoundingClientRect().top - root.getBoundingClientRect().top)
+    check(`${label}: a leading widget div precedes the first block`, lead.tagName === 'DIV' && /ProseMirror-widget|prosemirror-virtual-cursor/.test(lead.className), lead.tagName + '.' + lead.className)
+    check(`${label}: the first heading has no top margin and sits at the 8px page padding`, fw.getComputedStyle(h[0]).marginTop === '0px' && top === 8, `margin ${fw.getComputedStyle(h[0]).marginTop}, top ${top}`)
+    check(`${label}: the second heading keeps its margin`, parseFloat(fw.getComputedStyle(h[1]).marginTop) > 20, fw.getComputedStyle(h[1]).marginTop)
+  }
+  check('never focused: the editor has no DOM selection (the state a freshly loaded day is in)', fw.getSelection().rangeCount === 0 && !root.classList.contains('ProseMirror-focused'))
+  check('unfocused: the widget still has ProseMirror\'s own class', /ProseMirror-widget/.test(root.firstElementChild.className), root.firstElementChild.className)
+  probe('unfocused')
+  fresh.api.setMarkdown('![](assets/x.png)\n\n## After an image\n')
+  await sleep(200)
+  check('unfocused: an image block as first block has no top margin either', fw.getComputedStyle(root.querySelector('.milkdown-image-block')).marginTop === '0px')
+  fresh.api.setMarkdown('## First heading\n\nSome text.\n\n## Second heading\n')
+  fresh.api.focus()
+  await sleep(300)
+  check('focused: the editor owns the DOM selection and the cursor widget switched its class', fw.document.activeElement === root && fw.getSelection().rangeCount === 1 && /prosemirror-virtual-cursor/.test(root.firstElementChild.className), root.firstElementChild.className)
+  probe('focused')
+  fw.document.activeElement.blur()
+  await sleep(200)
+  probe('blurred again')
+  fresh.iframe.remove()
+}
+
+say('')
+say('== links never navigate the web view')
+api.setMarkdown('A [link](https://example.com/x?a=1&b=2) here\n')
+{
+  const a = pm().querySelector('a')
+  const n = msgs('openLink').length
+  const plain = new win.MouseEvent('click', { bubbles: true, cancelable: true })
+  a.dispatchEvent(plain)
+  check('plain click on a link in the editable text only places the caret', msgs('openLink').length === n)
+  const meta = new win.MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true })
+  a.dispatchEvent(meta)
+  check('cmd-click posts openLink and is cancelled', msgs('openLink').length === n + 1 && msgs('openLink').at(-1).url === 'https://example.com/x?a=1&b=2' && meta.defaultPrevented, msgs('openLink').at(-1)?.url)
+  api.setReadOnly(true)
+  const ro = new win.MouseEvent('click', { bubbles: true, cancelable: true })
+  a.dispatchEvent(ro)
+  check('read-only: plain click posts openLink and is cancelled', msgs('openLink').length === n + 2 && ro.defaultPrevented)
+  check('read-only: not editable', pm().getAttribute('contenteditable') === 'false')
+  api.setReadOnly(false)
+  check('editable again', pm().getAttribute('contenteditable') === 'true')
+  api.setMarkdown('[x](javascript:alert(1)) [w](#top) [d](data:text/html,hi) [f](file:///etc/passwd) [m](mailto:a@b.co)\n')
+  const n2 = msgs('openLink').length
+  const cancelled = []
+  for (const link of pm().querySelectorAll('a')) {
+    const ev = new win.MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true })
+    link.dispatchEvent(ev)
+    cancelled.push(ev.defaultPrevented)
+  }
+  check('javascript:, data:, file: and #anchor links are cancelled and never posted; mailto: is posted', cancelled.every(Boolean) && JSON.stringify(msgs('openLink').slice(n2).map((m) => m.url)) === '["mailto:a@b.co"]', JSON.stringify(msgs('openLink').slice(n2).map((m) => m.url)))
+  api.setMarkdown('A [link](https://example.com/x?a=1&b=2) here\n')
+  const a2 = pm().querySelector('a')
+  const mid = new win.MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 })
+  a2.dispatchEvent(mid)
+  check('middle-click is cancelled', mid.defaultPrevented)
+}
+
+say('')
+say('== placeholder, theme, spellcheck')
+api.setMarkdown('', { focus: true })
+api.setPlaceholder('Custom hint')
+await sleep(100)
+check('setPlaceholder changes the empty-line hint', win.document.querySelector('.crepe-placeholder')?.dataset.placeholder === 'Custom hint')
+api.setTheme('dark')
+const cs = () => win.getComputedStyle(win.document.documentElement)
+check('setTheme(dark)', cs().getPropertyValue('--dl-accent').trim() === '#45c29c' && cs().colorScheme === 'dark')
+api.setTheme('light')
+check('setTheme(light)', cs().getPropertyValue('--dl-accent').trim() === '#0e7a5f' && cs().colorScheme === 'light')
+check('page background is transparent', win.getComputedStyle(win.document.body).backgroundColor === 'rgba(0, 0, 0, 0)' && cs().backgroundColor === 'rgba(0, 0, 0, 0)')
+check('spellcheck is on', pm().getAttribute('spellcheck') === 'true')
+check('body text is 16px', win.getComputedStyle(pm().querySelector('p') || pm()).fontSize === '16px', win.getComputedStyle(pm()).fontSize)
+
+say('')
+say('== safety net: markdown that cannot be parsed without loss is shown read-only and handed back untouched')
+const safetyStart = host.messages.length
+{
+  const nodes = view.state.schema.nodes
+  const origParagraph = nodes.paragraph.createAndFill
+  const origHeading = nodes.heading.createAndFill
+  const raw = 'Precious text that must not be lost\n'
+  const n = msgs('change').length
+  api.setMarkdown('A normal day\n')
+  check('isRawFallback() is false for a normal day and no rawFallback message was posted', api.isRawFallback() === false && msgs('rawFallback').length === 0)
+
+  // A: the parser itself throws (it cannot even build an empty doc)
+  nodes.paragraph.createAndFill = () => { throw new win.RangeError('boom') }
+  api.setMarkdown(raw)
+  nodes.paragraph.createAndFill = origParagraph
+  await sleep(500)
+  check('isRawFallback() is true after a failed parse', api.isRawFallback() === true)
+  check('exactly one {type:"rawFallback", reason} message, after ready', msgs('rawFallback').length === 1 && /^parse-error: .*boom/.test(msgs('rawFallback')[0].reason) && host.messages.indexOf(msgs('rawFallback')[0]) > host.messages.findIndex((m) => m.type === 'ready'), JSON.stringify(msgs('rawFallback')))
+  check('getMarkdown returns the raw text, not the lossy copy', api.getMarkdown() === raw, JSON.stringify(api.getMarkdown()))
+  check('editor is read-only in that state', pm().getAttribute('contenteditable') === 'false')
+  check('a warn log was sent to the host as well', msgs('log').some((m) => m.level === 'warn' && /could not be parsed/.test(m.message)))
+  api.setReadOnly(false)
+  check('host cannot re-enable editing of the fallback view', pm().getAttribute('contenteditable') === 'false' && api.isRawFallback())
+  check('no change was emitted', msgs('change').length === n)
+  api.setMarkdown('Back to normal\n')
+  check('next setMarkdown restores a normal editable doc', pm().getAttribute('contenteditable') === 'true' && api.getMarkdown() === 'Back to normal\n')
+  check('...isRawFallback() is false again and no second message was posted', api.isRawFallback() === false && msgs('rawFallback').length === 1)
+
+  // B: Milkdown drops one node (logs it) but still returns a document
+  nodes.heading.createAndFill = () => { throw new win.RangeError('bang') }
+  api.setMarkdown('## A heading it cannot build\n\nand the text around it\n')
+  nodes.heading.createAndFill = origHeading
+  check('a silently dropped node is reported as content-dropped', api.isRawFallback() && msgs('rawFallback').length === 2 && /^content-dropped: .*bang/.test(msgs('rawFallback')[1].reason) && api.getMarkdown() === '## A heading it cannot build\n\nand the text around it\n', JSON.stringify(msgs('rawFallback')[1]))
+
+  // once per setMarkdown call
+  nodes.paragraph.createAndFill = () => { throw new win.RangeError('again') }
+  api.setMarkdown(raw)
+  api.setMarkdown(raw)
+  nodes.paragraph.createAndFill = origParagraph
+  check('one rawFallback message per failing setMarkdown call', msgs('rawFallback').length === 4, String(msgs('rawFallback').length))
+  api.setMarkdown('Fine again\n')
+  check('and none for the good call after it', msgs('rawFallback').length === 4 && !api.isRawFallback())
+}
+const safetyEnd = host.messages.length
+
+say('')
+say('== nothing leaves the page')
+check('no CSP violations', host.violations.length === 0, host.violations.join(' | '))
+const res = win.performance.getEntriesByType('resource').map((r) => r.name)
+check('no network resources requested by the editor', res.length === 0, res.join(' | '))
+const bad = host.messages.filter((m, i) => m.type === 'log' && (i < safetyStart || i >= safetyEnd)) // the safety-net block logs on purpose
+check('no unexpected warn/error log messages', bad.length === 0, bad.map((l) => l.message).join(' | ').slice(0, 300))
+check('every posted message is one of the known types', host.messages.every((m) => ['ready', 'change', 'uploadImage', 'openLink', 'log', 'rawFallback'].includes(m.type)))
+
+say('')
+say('== placeholders and remote images')
+api.setMarkdown('![]()\n\nafter\n')
+check('an empty image block is not written back as ![]()', api.getMarkdown() === 'after\n', JSON.stringify(api.getMarkdown()))
+api.setMarkdown('a\n\n\n\nb\n', { cursor: 'end' })
+view.dispatch(view.state.tr.insertText('c'))
+check('empty paragraphs are not written back as blank lines', api.getMarkdown() === 'a\n\nbc\n', JSON.stringify(api.getMarkdown()))
+{
+  const v0 = host.violations.length
+  api.setMarkdown('![x](https://example.com/pic.png)\n')
+  await sleep(600)
+  check('a remote image is blocked by the CSP (img-src), not fetched', host.violations.slice(v0).some((v) => v.startsWith('img-src') && v.includes('example.com')), host.violations.slice(v0).join(' | '))
+  check('...and shown as a neutral box', !!win.document.querySelector('img.dl-broken'))
+  // Chromium lists a blocked request as a resource entry with 0 bytes; the CDP network log shows no request at all
+  check('...and nothing was transferred', win.performance.getEntriesByType('resource').every((e) => e.transferSize === 0 && e.encodedBodySize === 0), JSON.stringify(win.performance.getEntriesByType('resource').map((e) => [e.name, e.transferSize, e.encodedBodySize])))
+}
+
+say('')
+say('Normalisation (input -> after the first parse/serialise); idempotent after that:')
+for (const [name, d] of normalised) {
+  say(`  ${name}: ${d.length} changed line(s)`)
+  for (const l of d.slice(0, 40)) say('     ' + l)
+  if (d.length > 40) say(`     ... ${d.length - 40} more`)
+}
+const failed = results.filter((r) => !r.ok).length
+say('')
+say(failed ? `RESULT: ${failed} FAILED of ${results.length}` : `RESULT: ALL ${results.length} PASS`)
+window.__results = { failed, total: results.length, results, normalised }
+document.title = (failed ? 'FAIL ' : 'PASS ') + document.title
+</script>
+</body>
+</html>

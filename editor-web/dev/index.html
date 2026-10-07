@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gloamlog editor harness</title>
+<style>
+  :root { --bg: #f9faf9; --fg: #1b201e; --muted: #566059; --line: #dce1dd; --panel: #fff; }
+  body.dark { --bg: #141716; --fg: #e8ecea; --muted: #a3ada7; --line: #2e3532; --panel: #1c201e; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 -apple-system, system-ui, sans-serif; background: #e3e6e4; color: var(--fg); }
+  body.dark { background: #0b0d0c; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  button, select, input[type=text] { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); }
+  button { cursor: pointer; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 16px; height: calc(100vh - 56px); }
+  #win { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+  #win .titlebar { padding: 16px 48px 4px; max-width: 816px; margin: 0 auto; width: 100%; }
+  #win .titlebar b { font-size: 32px; font-weight: 600; letter-spacing: -0.5px; display: block; }
+  #win .titlebar span { font-size: 13px; color: var(--muted); }
+  #win iframe { border: 0; flex: 1; width: 100%; background: transparent; }
+  body.solo aside, body.solo header { display: none; }
+  body.solo main { grid-template-columns: minmax(0, 1fr); height: 100vh; padding: 8px; }
+  aside { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  aside h2 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+  #log { flex: 1; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; font: 12px/1.45 ui-monospace, Menlo, monospace; }
+  #log div { padding: 2px 0; border-bottom: 1px solid var(--line); word-break: break-all; }
+  #log .t { color: var(--muted); }
+  #out { height: 160px; overflow: auto; margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <label>Fixture <select id="fixture"></select></label>
+  <button id="load">Load</button>
+  <button id="get">getMarkdown()</button>
+  <label>Theme <select id="theme"><option>light</option><option>dark</option></select></label>
+  <label><input type="checkbox" id="ro"> read-only</label>
+  <label>Uploads <select id="upmode"><option>ok</option><option>error</option><option>never</option></select></label>
+  <button id="ins-cursor">insert @cursor</button>
+  <button id="ins-start">insert @start</button>
+  <button id="ins-end">insert @end</button>
+  <label>Placeholder <input type="text" id="ph" placeholder="custom text" size="16"></label>
+  <button id="setph">Set</button>
+  <button id="clear">Clear log</button>
+</header>
+<main>
+  <div id="win">
+    <div class="titlebar"><b>Tuesday, 6 October</b><span>Daily log, 2026 (host header, outside the web view)</span></div>
+  </div>
+  <aside>
+    <h2>Bridge log (JS to Swift)</h2>
+    <div id="log"></div>
+    <h2>Last getMarkdown()</h2>
+    <pre id="out"></pre>
+  </aside>
+</main>
+<script type="module">
+import { mountEditor, sleep } from './harness.js'
+import { FIXTURES } from '../test/fixtures.js'
+
+if (location.search.includes('solo')) document.body.classList.add('solo') // ?solo: editor only, for 1:1 screenshots
+const $ = (id) => document.getElementById(id)
+const log = $('log')
+const t0 = performance.now()
+function line(msg) {
+  const d = document.createElement('div')
+  let text = msg.type
+  if (msg.type === 'change') text += ` (${msg.markdown.length} chars)`
+  else if (msg.type === 'uploadImage') text += ` ${msg.name} ${msg.mime} ${msg.dataBase64.length} b64 chars id=${msg.id}`
+  else if (msg.type !== 'ready') text += ' ' + JSON.stringify({ ...msg, at: undefined })
+  d.innerHTML = `<span class="t">+${Math.round(msg.at - t0)}ms</span> `
+  d.append(text)
+  log.append(d)
+  log.scrollTop = log.scrollHeight
+}
+
+const host = await mountEditor($('win'), { onMessage: line, upload: () => $('upmode').value, debug: { noClipboard: location.search.includes('noclip') } }) // ?noclip: page without navigator.clipboard
+window.host = host
+await host.ready
+
+for (const f of FIXTURES) $('fixture').add(new Option(f, f))
+const TEMPLATE = '## What I did\n\n## Finished\n\n## Started\n\n## Pending / blocked\n\n## To do next\n'
+async function load() {
+  const name = $('fixture').value
+  const md = name === 'template' ? TEMPLATE : await (await fetch(`../test/fixtures/${name}.md`)).text()
+  host.api.setMarkdown(md, { cursor: 'start', focus: true })
+}
+$('fixture').add(new Option('template (default)', 'template'), 0)
+$('fixture').value = 'template'
+$('load').onclick = load
+$('get').onclick = () => ($('out').textContent = host.api.getMarkdown())
+function applyTheme() {
+  // The host (SwiftUI window) paints the background and follows the same appearance as the page.
+  host.api.setTheme($('theme').value)
+  document.body.classList.toggle('dark', $('theme').value === 'dark')
+  document.documentElement.style.colorScheme = $('theme').value
+}
+$('theme').onchange = applyTheme
+applyTheme()
+$('ro').onchange = () => host.api.setReadOnly($('ro').checked)
+$('ins-cursor').onclick = () => host.api.insertMarkdown('- [ ] inserted at the cursor\n', 'cursor')
+$('ins-start').onclick = () => host.api.insertMarkdown('> inserted at the start\n', 'start')
+$('ins-end').onclick = () => host.api.insertMarkdown('Inserted at the end.\n', 'end')
+$('setph').onclick = () => host.api.setPlaceholder($('ph').value)
+$('clear').onclick = () => (log.textContent = '')
+await load()
+</script>
+</body>
+</html>
