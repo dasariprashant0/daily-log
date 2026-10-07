@@ -1,6 +1,6 @@
 # About
 
-Daily Log is a small Mac app for one habit: writing up your working day before you leave it.
+Gloamlog is a small Mac app for one habit: writing up your working day before you leave it.
 
 Every weekday at your reminder time it asks five questions: what you did, what you finished, what you started, what's pending, and what needs doing next. You can't save until all five are answered, and if you close the window it comes back until today is logged.
 

@@ -1,4 +1,4 @@
-# PRD: Daily Log v0.2
+# PRD: Gloamlog v0.2
 
 **Status**: Draft for build. v0.1 compiled, never launched or UI-tested.
 **Author**: Prashant Dasari  **Version**: 0.2  **Last updated**: 2026-10-06
@@ -106,9 +106,9 @@ Reminders alone get disabled. Retention comes from loops where each day's effort
 ### F5 Menu bar item
 *As a user, I want to see at a glance whether today is done without opening the app.*
 - [ ] A menu bar icon shows state: done, pending, skipped (distinct symbols, not colour alone).
-- [ ] Menu lists: status line, streak, "Open Daily Log", "Skip today", "Snooze", "Open folder", "Settings", "Quit".
+- [ ] Menu lists: status line, streak, "Open Gloamlog", "Skip today", "Snooze", "Open folder", "Settings", "Quit".
 - [ ] Menu bar item can be hidden in Settings; the app still runs and nags.
-- [ ] Clicking "Open Daily Log" brings the main window forward.
+- [ ] Clicking "Open Gloamlog" brings the main window forward.
 
 ### F6 Native notification + window nag, Strict/Gentle
 *As a user, I choose how hard the app pushes me.*
@@ -140,7 +140,7 @@ Reminders alone get disabled. Retention comes from loops where each day's effort
 - [ ] Settings window opens with ⌘, and from the menu bar.
 - [ ] Reminder time (time picker); weekday toggles (any subset of 7 days); strictness (Strict/Gentle); launch at login (on/off, via `SMAppService`, reflecting real registration status); storage folder; snooze minutes (e.g. 5, 10, 15, 30, 60).
 - [ ] All settings persist across relaunch and take effect without restart.
-- [ ] Storage folder picker (`NSOpenPanel`): changing it does not move or delete existing logs; user is asked whether to move existing files, and the default stays `~/daily-log`. Picking iCloud Drive or Dropbox folders works.
+- [ ] Storage folder picker (`NSOpenPanel`): changing it does not move or delete existing logs; user is asked whether to move existing files, and the default stays `~/Gloamlog`. Picking iCloud Drive or Dropbox folders works.
 - [ ] If the storage folder becomes unavailable (unmounted, deleted), the app shows a clear error and does not silently write elsewhere.
 - [ ] Launch at login defaults to off and is offered during onboarding (v0.1 registered silently; v0.2 asks).
 
@@ -184,7 +184,7 @@ Reminders alone get disabled. Retention comes from loops where each day's effort
 - [ ] CI is green on `main` before any release tag.
 
 ### F16 Tagged-release workflow
-- [ ] Pushing a tag `vX.Y.Z` builds the app, runs tests, produces `DailyLog.zip` and a SHA-256 checksum, and creates a GitHub Release with notes pulled from `CHANGELOG.md`.
+- [ ] Pushing a tag `vX.Y.Z` builds the app, runs tests, produces `Gloamlog.zip` and a SHA-256 checksum, and creates a GitHub Release with notes pulled from `CHANGELOG.md`.
 - [ ] Release is ad-hoc signed and clearly labelled "not notarised" with install steps.
 - [ ] Build is reproducible from a clean clone using only documented steps.
 - [ ] Targets both arm64 and x86_64 (universal binary), or documents the single architecture.
@@ -238,7 +238,7 @@ Kill signal: if the author keeps typing junk ("n/a") to unlock Save, or keeps qu
 | **Gatekeeper friction on newer macOS**: recent releases tightened the right-click > Open path (may require System Settings > Privacy & Security > "Open Anyway"). | High | Medium | Verify steps on the newest macOS and document both paths with screenshots. |
 | Notifications denied or unsupported for an unsigned app; Strict nag is then the only signal. | Medium | Medium | Degrade to window/menu bar; do not depend on notification permission. |
 | CLT-only toolchain: XCTest and SwiftPM may be unavailable or behave differently without Xcode; CI runner toolchain differs from local. | Medium | Medium | Spike on `swift test` under CLT first; fall back to a plain assertion runner compiled by `swiftc`. |
-| Single-file code (`DailyLog.swift`) becomes unmanageable with v0.2 scope and hard to test. | High | Medium | Split into a few files (logic vs UI) as part of F14; update `docs/FILE_STRUCTURE.md`. |
+| Single-file code (`Gloamlog.swift`) becomes unmanageable with v0.2 scope and hard to test. | High | Medium | Split into a few files (logic vs UI) as part of F14; update `docs/FILE_STRUCTURE.md`. |
 | Storage in iCloud/Dropbox: partial sync, conflicted copies, evicted files, or slow reads. | Medium | Medium | Atomic writes; tolerate conflict-copy filenames by ignoring non `YYYY-MM-DD.md` files; document that two Macs editing the same day can conflict. |
 | Customisable sections make parsing ambiguous (rename, duplicate titles, `## ` in text). | Medium | Medium | Escape on save; unique titles enforced; legacy-section display; round-trip tests. |
 | Strict nag drives users to quit the app, silencing it. | Medium | Medium | Gentle mode, snooze, weekday toggles, skip day; watch the kill signal. |

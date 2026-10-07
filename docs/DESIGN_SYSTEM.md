@@ -1,4 +1,4 @@
-# Daily Log Design System v2 (for v0.2)
+# Gloamlog Design System v2 (for v0.2)
 
 Native macOS, SwiftUI, macOS 13+, no third-party dependencies, no Swift macros (no `@Observable`, no `#Preview`; state is `ObservableObject` + `@StateObject` / `@Published`, plus `@AppStorage` and `@Environment`, as in v1).
 
@@ -8,7 +8,7 @@ Native macOS, SwiftUI, macOS 13+, no third-party dependencies, no Swift macros (
 
 | Area | Status |
 |---|---|
-| Sidebar list (today + past days, logged/not logged), page header (title, date), 5 text blocks, Save, "n/5 filled", reminder picker, Open folder | **Implemented in v1** (`app/DailyLog.swift`), restyled by this spec |
+| Sidebar list (today + past days, logged/not logged), page header (title, date), 5 text blocks, Save, "n/5 filled", reminder picker, Open folder | **Implemented in v1** (`app/Gloamlog.swift`), restyled by this spec |
 | Everything else below: palette/Theme.swift, section card with check, progress ring, sticky save bar, streak chip, Yesterday card, month grouping, skipped/missed states, heatmap, search, weekly review, menu bar item, Settings window, onboarding, banners, motion, app icon | **Proposed, not built** |
 | Streak, skip, search and weekly review contradict PRD v1 non-goals; they are v0.2 scope and need the PRD updated | **Decision needed** |
 
@@ -290,11 +290,11 @@ Placement: bottom of the sidebar (below the list, pinned) and also at the head o
 ### 6.8 Search field and results row
 
 - Field: top of sidebar, margin 12, height 28, `radiusMd`, fill `surface`, 1pt `border`, padding horizontal 8. Leading `magnifyingglass` 12pt `textTertiary`, 6 gap, text 13pt, placeholder `"Search logs"` `textTertiary`. Trailing `xmark.circle.fill` 12pt `textTertiary` when non-empty. Focus: border `accent`, ring `focusRing`. `⌘F` focuses it.
-- Behaviour: debounce 150ms; scans the markdown files in `~/daily-log` (case- and diacritic-insensitive); minimum 2 characters.
+- Behaviour: debounce 150ms; scans the markdown files in `~/Gloamlog` (case- and diacritic-insensitive); minimum 2 characters.
 - While a query is active the sidebar list is replaced by results; clearing returns the month list.
 - Result row: min height 52, padding 10, `radiusMd`, same hover/selected fills as sidebar rows. Line 1: `"Mon 5 Oct"` 13pt semibold. Line 2: snippet 12pt `textSecondary`, max 2 lines, about 90 characters centred on the match. The match run: `textPrimary` on `accentTint`, `radiusSm` 4 background (implemented with `AttributedString` `backgroundColor`). Line 3: section label `"Pending / blocked"` 11pt `textTertiary`.
 - A day with several hits shows its best snippet plus `"+2 more"` 11pt `textTertiary`.
-- Empty: `"No logs mention “xyz”."` 13pt `textSecondary` and below `"Search covers every day in ~/daily-log."` 12pt `textTertiary`. Error (folder unreadable): banner 6.14.
+- Empty: `"No logs mention “xyz”."` 13pt `textSecondary` and below `"Search covers every day in ~/Gloamlog."` 12pt `textTertiary`. Error (folder unreadable): banner 6.14.
 
 ### 6.9 Weekly review layout
 
@@ -334,7 +334,7 @@ To do next  (latest day only)
 | Skipped | `minus.circle` | user skipped today |
 | Off-day | `moon.zzz` | weekend / non-workday (reminder inactive) |
 
-Menu content (native menu, 13pt): status line (disabled item) `"Today: 3 of 5 sections"`; `Open Daily Log` (`⌘O`); `Skip today` (weekdays only, not when logged); divider; `Settings…` (`⌘,`); `Quit Daily Log` (`⌘Q`). The symbol shape differs in every state so it does not depend on colour. Updating the icon on the existing 60s timer is enough.
+Menu content (native menu, 13pt): status line (disabled item) `"Today: 3 of 5 sections"`; `Open Gloamlog` (`⌘O`); `Skip today` (weekdays only, not when logged); divider; `Settings…` (`⌘,`); `Quit Gloamlog` (`⌘Q`). The symbol shape differs in every state so it does not depend on colour. Updating the icon on the existing 60s timer is enough.
 
 ### 6.11 Settings form layout
 
@@ -345,7 +345,7 @@ Native `Settings` scene (macOS 13: open with `NSApp.sendAction(Selector(("showSe
 | Reminder | `DatePicker` "Remind me at" (hour/minute) | default 4:55 PM, `@AppStorage("remindMinutes")` |
 | Reminder | Five weekday toggles, Mon to Fri, as `Toggle` with `.toggleStyle(.button)` height 28 | proposed (PRD F15) |
 | Reminder | `Toggle` "Bring the window to the front" | on = v1 behaviour |
-| Storage | Path label, 12pt mono `textSecondary`, `"~/daily-log"` | |
+| Storage | Path label, 12pt mono `textSecondary`, `"~/Gloamlog"` | |
 | Storage | `Button` "Show in Finder" | replaces v1 "Open folder" |
 | Startup | `Toggle` "Open at login" | `SMAppService.mainApp` register / unregister (v1 registers silently; this makes it visible and reversible) |
 | Appearance | `Toggle` "Use system accent colour" | proposed, default off; when on, `accent` tokens map to `Color.accentColor` and tints derive at 14% alpha |
@@ -356,9 +356,9 @@ Group header text 13pt semibold (system default in grouped `Form`); helper text 
 
 Shown once (`@AppStorage("onboarded")` false) as a sheet over the main window, 560x440, `radiusLg`, elevation 2. Content padding 40. Step indicator: three capsules 28x4, gap 6, active `accent`, inactive `border`, top-left. `Skip` text button top-right (13pt `textSecondary`). Primary button right-bottom (6.4 style, height 32). Back button (plain text) left-bottom from step 2.
 
-1. **Welcome.** Headline `"Write up your day in five boxes."` (28pt). Body 15pt `textSecondary` max 52 characters per line: `"Daily Log saves plain markdown files that you own."` Beneath: a live preview of the five section labels as real gutter marks, stacked 8 apart (empty circles; the last one draws its check once, 300ms after appearing; static under Reduce Motion). CTA `Continue`.
+1. **Welcome.** Headline `"Write up your day in five boxes."` (28pt). Body 15pt `textSecondary` max 52 characters per line: `"Gloamlog saves plain markdown files that you own."` Beneath: a live preview of the five section labels as real gutter marks, stacked 8 apart (empty circles; the last one draws its check once, 300ms after appearing; static under Reduce Motion). CTA `Continue`.
 2. **Reminder.** Headline `"When should it remind you?"` Time picker (large, 15pt) and the weekday toggles from 6.11. Helper: `"It comes to the front at this time until today's log is saved."` CTA `Continue`.
-3. **Where it lives.** Headline `"Your logs stay on this Mac."` Path in a mono pill-less row (`surface` field, 1pt `border`, `radiusMd`, 12pt mono): `~/daily-log`. Toggle `Open at login` (explained: `"So the reminder can fire after a restart."`). CTA `Start today's log` closes the sheet and focuses the first editor.
+3. **Where it lives.** Headline `"Your logs stay on this Mac."` Path in a mono pill-less row (`surface` field, 1pt `border`, `radiusMd`, 12pt mono): `~/Gloamlog`. Toggle `Open at login` (explained: `"So the reminder can fire after a restart."`). CTA `Start today's log` closes the sheet and focuses the first editor.
 
 No stock illustrations, no marketing copy. If login-item registration needs approval, show the warning banner (6.14) in step 3 with `"Open System Settings"` action.
 
@@ -382,8 +382,8 @@ Inline, at the top of the detail column (above the page header), full 720 width,
 | Type | Fill | Icon | Examples |
 |---|---|---|---|
 | Info | `sidebar` + 1pt `border` | `info.circle` `textSecondary` | `"Reminders are paused on weekends."` |
-| Success | `accentTint` | `checkmark.circle.fill` `accentText` | `"Saved to ~/daily-log/2026-10-06.md"` (auto-dismiss after 4s) |
-| Warning | `warningTint` | `exclamationmark.triangle` `warning` | `"Open at login needs your approval."` + `Open System Settings`; `"2 files in ~/daily-log could not be read."` |
+| Success | `accentTint` | `checkmark.circle.fill` `accentText` | `"Saved to ~/Gloamlog/2026-10-06.md"` (auto-dismiss after 4s) |
+| Warning | `warningTint` | `exclamationmark.triangle` `warning` | `"Open at login needs your approval."` + `Open System Settings`; `"2 files in ~/Gloamlog could not be read."` |
 | Error | `dangerTint` | `xmark.octagon` `danger` | `"Couldn't save: <localizedDescription>"` + `Try again` |
 
 Rules: one banner at a time (newest replaces), errors never auto-dismiss, banner text always says what failed and what to do. VoiceOver: post an `.announcement` for new banners. Replaces v1's red text beside the Save button.

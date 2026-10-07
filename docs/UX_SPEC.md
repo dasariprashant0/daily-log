@@ -1,6 +1,6 @@
-# Daily Log v0.2: UX Spec
+# Gloamlog v0.2: UX Spec
 
-**Status**: Design, not built. Extends v1 (`docs/PRD.md`, `docs/DESIGN_SYSTEM.md`, `docs/ARCHITECTURE.md`, `app/DailyLog.swift`).
+**Status**: Design, not built. Extends v1 (`docs/PRD.md`, `docs/DESIGN_SYSTEM.md`, `docs/ARCHITECTURE.md`, `app/Gloamlog.swift`).
 **Platform**: macOS 13+, SwiftUI only, no network, no telemetry, plain markdown on disk, built without Xcode (no macros: `ObservableObject` + `@StateObject` + `@AppStorage`, never `@State`/`@Observable`).
 **Decided scope** (not up for debate here): 1 draft autosave, 2 skip day, 3 Yesterday card + carry-over, 4 streak + 12-week heatmap, 5 menu bar item, 6 notification + window nag with Strict/Gentle, 7 search, 8 weekly review + copy as markdown, 9 settings window, 10 customisable sections, 11 keyboard shortcuts, 12 first-run onboarding.
 
@@ -25,7 +25,7 @@ Design target: Priya must be nudged firmly, Marcus must never be ambushed, Sana 
 ## 2. Information architecture
 
 ```
-Daily Log.app
+Gloamlog.app
 ├── Main window (single Window scene, min 820x600, default 980x740)
 │   ├── Sidebar
 │   │   ├── Search field (⌘F)
@@ -60,7 +60,7 @@ On-disk contract the UX depends on (details belong in TRD):
 |---|---|
 | Log | `<folder>/YYYY-MM-DD.md`: `# date`, then `## <section title>` blocks (unchanged from v1; default titles keep their emoji so v1 files load). |
 | Skipped day | Same file name. Body is a single blockquote: `> Skipped: Holiday` (reason optional: `> Skipped`). Readable in any editor. |
-| Draft | **[Decision]** `~/Library/Application Support/Daily Log/drafts/YYYY-MM-DD.json`, outside the storage folder. Reason: drafts must survive an unwritable or unsynced folder, and half-written text should not sync between Macs or create iCloud conflict copies. |
+| Draft | **[Decision]** `~/Library/Application Support/Gloamlog/drafts/YYYY-MM-DD.json`, outside the storage folder. Reason: drafts must survive an unwritable or unsynced folder, and half-written text should not sync between Macs or create iCloud conflict copies. |
 | Settings | `UserDefaults` (`@AppStorage`). Sections list stored as JSON in one key. |
 | Logged | File exists, is not a skip marker, has at least one `##` section, and **every `##` section in that file is non-empty**. Adding a section later does not un-log old days. |
 | Scheduled day | A weekday ticked in Settings. A log or skip on a non-scheduled day is allowed and counts (see streak). |
@@ -160,12 +160,12 @@ Cell size 11 pt with 3 pt gap: 12 columns = 162 pt, fits the 190 pt minimum side
 │ M T W T F S S  (last 7 days, cells)  │
 │ ▓ ▓ ▓ ⊖ ▓ · ·                        │
 │ ──────────────────────────────────── │
-│ [ Open Daily Log           ⌘O ]      │   primary
+│ [ Open Gloamlog           ⌘O ]      │   primary
 │ Remind me in 15 min   (when due)     │
 │ Skip today…                          │
 │ ──────────────────────────────────── │
 │ Settings…                       ⌘,   │
-│ Quit Daily Log                  ⌘Q   │
+│ Quit Gloamlog                  ⌘Q   │
 └──────────────────────────────────────┘
 ```
 
@@ -175,11 +175,11 @@ Menu bar icon (template images, shape differs per state, plus title text for Voi
 
 | State | SF Symbol | Accessibility title |
 |---|---|---|
-| Before reminder, unlogged | `book.closed` | Daily Log: today not yet logged |
-| Due, unlogged | `pencil.circle.fill` | Daily Log: time to write up today |
-| Logged | `checkmark.circle` | Daily Log: today logged |
-| Skipped / not a workday | `moon.zzz` / `circle.dashed` | Daily Log: skipped today / no log needed today |
-| Folder problem | `exclamationmark.triangle` | Daily Log: can't save, folder unavailable |
+| Before reminder, unlogged | `book.closed` | Gloamlog: today not yet logged |
+| Due, unlogged | `pencil.circle.fill` | Gloamlog: time to write up today |
+| Logged | `checkmark.circle` | Gloamlog: today logged |
+| Skipped / not a workday | `moon.zzz` / `circle.dashed` | Gloamlog: skipped today / no log needed today |
+| Folder problem | `exclamationmark.triangle` | Gloamlog: can't save, folder unavailable |
 
 Toggle in Settings: "Show in menu bar" (`MenuBarExtra(isInserted:)`, default on). Clicking Open raises the main window (does not activate if already frontmost).
 
@@ -300,7 +300,7 @@ General
 │ On these days       [M] [T] [W] [T] [F] [ S ] [ S ]       │
 │                                                          │
 │ When the reminder fires                                  │
-│  (•) Strict   Bring Daily Log to the front and keep      │
+│  (•) Strict   Bring Gloamlog to the front and keep      │
 │               re-opening it every 5 minutes until you    │
 │               save or skip the day.                      │
 │  ( ) Gentle   Send one notification. Nothing else.       │
@@ -308,7 +308,7 @@ General
 │ Snooze for          [ 15 minutes ▾ ]  (5, 10, 15, 20, 30)│
 │   Strict allows 2 snoozes a day. Gentle allows any.      │
 │                                                          │
-│ [x] Open Daily Log at login                              │
+│ [x] Open Gloamlog at login                              │
 │ [x] Show in menu bar                                     │
 │ Notifications: On   [Open System Settings]               │
 └──────────────────────────────────────────────────────────┘
@@ -327,7 +327,7 @@ Sections
 Storage
 ┌──────────────────────────────────────────────────────────┐
 │ Logs are saved in                                        │
-│  ~/Library/Mobile Documents/com~apple~CloudDocs/DailyLog │
+│  ~/Library/Mobile Documents/com~apple~CloudDocs/Gloamlog │
 │  [ Choose folder… ]  [ Show in Finder ]  [ Use default ] │
 │  128 logs · 3 skipped days · 2 files not recognised      │
 │                                                          │
@@ -352,7 +352,7 @@ Step 1 of 3 - Welcome
 ┌───────────────────────────────────────────────────────┐
 │  Write up your day, every day.                        │
 │                                                       │
-│  At a time you choose, Daily Log asks five short      │
+│  At a time you choose, Gloamlog asks five short      │
 │  questions: what you did, what's done, what you       │
 │  started, what's stuck, what's next.                  │
 │                                                       │
@@ -385,21 +385,21 @@ Step 2 of 3 - Reminder
 Step 3 of 3 - Folder
 ┌───────────────────────────────────────────────────────┐
 │  Where should logs live?                              │
-│  (•) ~/daily-log   (default, on this Mac)             │
-│  ( ) iCloud Drive / DailyLog                          │
+│  (•) ~/Gloamlog   (default, on this Mac)             │
+│  ( ) iCloud Drive / Gloamlog                          │
 │  ( ) Another folder…  [ Choose… ]                     │
 │                                                       │
 │  Pick iCloud Drive or Dropbox to keep logs on every   │
 │  Mac. You can change this later.                      │
 │                                                       │
-│  [x] Open Daily Log at login                          │
+│  [x] Open Gloamlog at login                          │
 │                         [ Back ]  [ Start logging ]   │
 └───────────────────────────────────────────────────────┘
 ```
 
 - Everything is pre-filled; a user who accepts defaults presses Continue, Continue, Start logging.
-- "iCloud Drive / DailyLog" option appears only if the iCloud Drive folder exists on disk.
-- Existing v1 users (a `~/daily-log` folder with logs exists, or `remindMinutes` is set): skip onboarding, keep Strict and their reminder time, show a one-time sheet "What's new in 0.2" with 4 bullets and a "Take a look at Settings" button.
+- "iCloud Drive / Gloamlog" option appears only if the iCloud Drive folder exists on disk.
+- Existing v1 users (a `~/Gloamlog` folder with logs exists, or `remindMinutes` is set): skip onboarding, keep Strict and their reminder time, show a one-time sheet "What's new in 0.2" with 4 bullets and a "Take a look at Settings" button.
 - Esc does not dismiss onboarding; a visible `Skip setup` text button on step 1 applies defaults.
 
 ### 3.11 Nag surfaces (not screens, but specified)
@@ -478,11 +478,11 @@ User can always: ⌘Q (the app quits, nag stops), ⌘W/⌘H, switch apps. The na
 Settings > Storage > Choose folder…  -> NSOpenPanel (directories only, "Choose")
  ├─ Pre-check new folder: writable? (else error 7.1, nothing changes)
  ├─ Case A: new folder is empty
- │    Dialog: "Move your 128 logs to 'DailyLog'?"
+ │    Dialog: "Move your 128 logs to 'Gloamlog'?"
  │      [Move logs]  [Copy logs]  [Leave them]   [Cancel]
  │      Default button: Copy logs   (safest; originals untouched)
  ├─ Case B: new folder already has logs (e.g. second Mac)
- │    Dialog: "'DailyLog' already has 96 logs."
+ │    Dialog: "'Gloamlog' already has 96 logs."
  │      Body: "Use them as they are, or also copy over the 128 from your
  │             current folder. Days that exist in both are never overwritten."
  │      [Use this folder]  [Use and copy mine over]  [Cancel]
@@ -568,9 +568,9 @@ Voice: plain, calm, second person, sentence case, verbs on buttons, no exclamati
 | Banner extra (3rd re-open) | `Not today? Skip day.` |
 | Banner, Gentle | `Today isn't logged yet.` |
 | Notification title | `Time to write up your day` |
-| Notification body | `It takes a few minutes. Daily Log is ready when you are.` |
+| Notification body | `It takes a few minutes. Gloamlog is ready when you are.` |
 | Notification actions | `Open` · `Snooze 15 min` |
-| Late notification (launched after reminder, Gentle) | title `Today isn't logged yet` / body `It's 6:10 pm. Open Daily Log whenever you're ready.` |
+| Late notification (launched after reminder, Gentle) | title `Today isn't logged yet` / body `It's 6:10 pm. Open Gloamlog whenever you're ready.` |
 | Draft restored | `Draft restored from 4:12 pm.` with `Discard draft` text button |
 | Past-day edit banner | `Editing Monday, 28 September 2026` |
 | Yesterday card | heading `Yesterday` / `Friday` / `Fri, 2 Oct`; labels `To do next`, `Pending / blocked`; buttons `Carry over to Pending` · menu `Carry over to…` · `Hide`; after: `Carried ✓` · `Undo` |
@@ -578,7 +578,7 @@ Voice: plain, calm, second person, sentence case, verbs on buttons, no exclamati
 | Skip sheet | title `Skip today?` / body `No reminder, no nag, and your streak stays as it is. You can undo this any time.` / `Reason (optional)` / `Today only` / `Today through` / `Your draft for today is kept, not deleted.` / `Cancel` · `Skip day` |
 | Skip sheet (range) | title `Skip these days?` / `3 workdays: Wed 7 to Fri 9 Oct` / `Skip 3 days` |
 | Skipped page | `You skipped this day. It doesn't affect your streak.` · `Write a log anyway` · `Undo skip` |
-| Menu bar | `Open Daily Log` · `Remind me in 15 min` · `Skip today…` · `Settings…` · `Quit Daily Log` |
+| Menu bar | `Open Gloamlog` · `Remind me in 15 min` · `Skip today…` · `Settings…` · `Quit Gloamlog` |
 | Menu bar, logged | `Logged today ✓` · skip item disabled: `Today is already logged` |
 | Search | placeholder `Search your logs` · `6 matches in 4 days` · `No matches for "pricing". Try a shorter word.` · section filter `All sections` |
 | Week review | `Week of 5 to 11 Oct 2026` · `Logged 4 of 5 · 1 skipped` · `Copy as markdown` · `Copied ✓` · `Not logged yet` · `Skipped · Holiday` |
@@ -591,13 +591,13 @@ Voice: plain, calm, second person, sentence case, verbs on buttons, no exclamati
 | Time | `Remind me at` | |
 | Days | `On these days` | `Keep at least one day.` |
 | Strictness | `When the reminder fires` | |
-| Strict | `Strict` | `Brings Daily Log to the front and keeps re-opening it every 5 minutes until you save or skip the day.` |
+| Strict | `Strict` | `Brings Gloamlog to the front and keeps re-opening it every 5 minutes until you save or skip the day.` |
 | Gentle | `Gentle` | `Sends one notification. Nothing else.` |
 | Snooze | `Snooze for` | `Strict allows 2 snoozes a day. Gentle allows any number.` |
-| Login | `Open Daily Log at login` | `Needed for reminders after a restart.` |
+| Login | `Open Gloamlog at login` | `Needed for reminders after a restart.` |
 | Menu bar | `Show in menu bar` | |
-| Notifications off | `Notifications are off for Daily Log.` | `Gentle needs them. Strict still opens the window.` + `Open System Settings` |
-| Login needs approval | `Approve Daily Log in System Settings > General > Login Items.` | `Open Login Items` |
+| Notifications off | `Notifications are off for Gloamlog.` | `Gentle needs them. Strict still opens the window.` + `Open System Settings` |
+| Login needs approval | `Approve Gloamlog in System Settings > General > Login Items.` | `Open Login Items` |
 | Sections footer | `Every section is required when you save. 1 to 10 sections.` | |
 | Remove section confirm | `Remove "Pending / blocked"?` / `New logs won't have this section. What you already wrote stays in your files and in past days.` / `Remove section` · `Keep section` | |
 | Rename note | `Past logs keep the old name. They still open fine.` | |
@@ -607,8 +607,8 @@ Voice: plain, calm, second person, sentence case, verbs on buttons, no exclamati
 
 | Case | Title | Body | Buttons |
 |---|---|---|---|
-| Empty destination | `Move your 128 logs to "DailyLog"?` | `Copy keeps your originals where they are.` | `Copy logs` (default) · `Move logs` · `Leave them` · `Cancel` |
-| Destination has logs | `"DailyLog" already has 96 logs.` | `Days that exist in both are never overwritten.` | `Use this folder` · `Use and copy mine over` · `Cancel` |
+| Empty destination | `Move your 128 logs to "Gloamlog"?` | `Copy keeps your originals where they are.` | `Copy logs` (default) · `Move logs` · `Leave them` · `Cancel` |
+| Destination has logs | `"Gloamlog" already has 96 logs.` | `Days that exist in both are never overwritten.` | `Use this folder` · `Use and copy mine over` · `Cancel` |
 | Result | `Copied 124 logs. 4 days already existed in the new folder and were left alone.` | | `Show them` · `Done` |
 | Same folder | `That's already your log folder.` | | `OK` |
 
@@ -616,22 +616,22 @@ Voice: plain, calm, second person, sentence case, verbs on buttons, no exclamati
 
 | Step | Copy |
 |---|---|
-| 1 | Title `Write up your day, every day.` Body `At a time you choose, Daily Log asks five short questions: what you did, what's done, what you started, what's stuck, and what's next.` Bullets `Your logs are plain markdown files you own.` · `Nothing leaves your Mac. No account, no tracking.` Buttons `Continue` · `Skip setup` |
+| 1 | Title `Write up your day, every day.` Body `At a time you choose, Gloamlog asks five short questions: what you did, what's done, what you started, what's stuck, and what's next.` Bullets `Your logs are plain markdown files you own.` · `Nothing leaves your Mac. No account, no tracking.` Buttons `Continue` · `Skip setup` |
 | 2 | Title `When should we ask?` / `How firm?` Strict `Strict: Comes to the front until you save or skip the day.` Gentle `Gentle: One notification. You decide when.` Footnote `You can always skip a day or snooze. Change this later in Settings.` |
-| 3 | Title `Where should logs live?` Options `On this Mac: ~/daily-log` · `iCloud Drive: DailyLog` · `Another folder…` Help `Pick iCloud Drive or Dropbox to keep logs on every Mac.` Checkbox `Open Daily Log at login` Button `Start logging` |
+| 3 | Title `Where should logs live?` Options `On this Mac: ~/Gloamlog` · `iCloud Drive: Gloamlog` · `Another folder…` Help `Pick iCloud Drive or Dropbox to keep logs on every Mac.` Checkbox `Open Gloamlog at login` Button `Start logging` |
 | What's new (v1 users) | `What's new in 0.2` · `Skip a day without breaking your streak.` · `Gentle mode and notifications.` · `Menu bar item, search, weekly review.` · `Choose your own sections and folder.` · `Take a look at Settings` |
 
 ### 6.5 Error and edge strings
 
 | Situation | Copy |
 |---|---|
-| Folder missing | `Your log folder can't be found.` / `"~/Documents/DailyLog" isn't there any more. It may have been moved or an external drive is disconnected.` / `Choose folder…` · `Try again` · `Create it again` |
-| Folder unwritable | `Daily Log can't save to this folder.` / `You may not have permission to write to "DailyLog". Your text is safe as a draft on this Mac.` / `Choose folder…` · `Try again` · `Copy my text` |
+| Folder missing | `Your log folder can't be found.` / `"~/Documents/Gloamlog" isn't there any more. It may have been moved or an external drive is disconnected.` / `Choose folder…` · `Try again` · `Create it again` |
+| Folder unwritable | `Gloamlog can't save to this folder.` / `You may not have permission to write to "Gloamlog". Your text is safe as a draft on this Mac.` / `Choose folder…` · `Try again` · `Copy my text` |
 | Save failed (generic) | `Couldn't save today's log.` / `<system reason>. Your draft is kept. Try again or choose another folder.` / `Try again` |
 | iCloud file downloading | `Downloading from iCloud…` |
 | File changed elsewhere | `This log changed on another Mac.` / `You have unsaved edits here.` / `Keep mine` · `Use the other version` (mine is kept as a draft) |
 | Midnight rollover | `It's now Tuesday, 7 October. You're still writing Monday, 6 October.` · `Start today's log` (after save) |
-| Clock changed | `The date changed. Daily Log updated your reminder.` (menu bar tooltip only, no dialog) |
+| Clock changed | `The date changed. Gloamlog updated your reminder.` (menu bar tooltip only, no dialog) |
 | Notification denied | see 6.2 |
 | Section name taken | `A section named "Finished" already exists.` |
 | Section name empty | `Give this section a name.` |
@@ -740,7 +740,7 @@ Registered through `.commands` menu items, so they appear in the menu bar and ar
 | Copy week as markdown | ⌘⇧C | Weekly review |
 | Open storage folder in Finder | ⌘⇧O | Main window |
 | Settings | ⌘, | Anywhere (standard `Settings` scene) |
-| Open Daily Log | ⌘O | Menu bar popover (when focused) |
+| Open Gloamlog | ⌘O | Menu bar popover (when focused) |
 | Toggle sidebar | ⌃⌘S | Standard `NavigationSplitView` |
 | Close window | ⌘W | Standard |
 | Hide / Quit | ⌘H / ⌘Q | Standard |

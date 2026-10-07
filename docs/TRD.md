@@ -1,6 +1,6 @@
-# Daily Log: Technical Requirements
+# Gloamlog: Technical Requirements
 
-Status: describes the code as it exists in `app/DailyLog.swift`, `app/build.sh`, `daily-log.sh`, `daily-log.py`. Nothing has been built or run yet; every claim below is from reading source, not from execution.
+Status: describes the code as it exists in `app/Gloamlog.swift`, `app/build.sh`, `daily-log.sh`, `daily-log.py`. Nothing has been built or run yet; every claim below is from reading source, not from execution.
 
 ## 1. Platform and toolchain
 
@@ -9,21 +9,21 @@ Status: describes the code as it exists in `app/DailyLog.swift`, `app/build.sh`,
 - Toolchain: `swiftc` from Xcode Command Line Tools only. No Xcode project, no SwiftPM, no dependencies.
 - Frameworks: SwiftUI, ServiceManagement (`SMAppService`), AppKit (implicit).
 - Flags: `-O -parse-as-library -swift-version 5`. `-parse-as-library` is required because the entry point is `@main`.
-- Single source file: `app/DailyLog.swift` (~185 lines).
+- Single source file: `app/Gloamlog.swift` (~185 lines).
 
 ## 2. Build, sign, package (`app/build.sh`)
 
 Run from `app/`: `./build.sh` (`set -e`).
 
-1. `rm -rf "Daily Log.app" DailyLog.zip`; create `Daily Log.app/Contents/MacOS`.
-2. `swiftc` compiles to `Contents/MacOS/DailyLog`.
-3. `Info.plist` written by heredoc: bundle id `local.dailylog.app`, name/display name "Daily Log", executable `DailyLog`, `APPL`, version `1.0`, min OS 13.0, `NSPrincipalClass` NSApplication, `NSHighResolutionCapable`. No icon, no `LSUIElement` (app shows in Dock).
+1. `rm -rf "Gloamlog.app" Gloamlog.zip`; create `Gloamlog.app/Contents/MacOS`.
+2. `swiftc` compiles to `Contents/MacOS/Gloamlog`.
+3. `Info.plist` written by heredoc: bundle id `io.github.dasariprashant0.gloamlog`, name/display name "Gloamlog", executable `Gloamlog`, `APPL`, version `1.0`, min OS 13.0, `NSPrincipalClass` NSApplication, `NSHighResolutionCapable`. No icon, no `LSUIElement` (app shows in Dock).
 4. `codesign --force --sign - "$APP"` (ad-hoc).
-5. `ditto -c -k --keepParent` produces `DailyLog.zip`.
+5. `ditto -c -k --keepParent` produces `Gloamlog.zip`.
 
-Outputs: `app/Daily Log.app`, `app/DailyLog.zip`.
+Outputs: `app/Gloamlog.app`, `app/Gloamlog.zip`.
 
-## 3. Data format: `~/daily-log/YYYY-MM-DD.md`
+## 3. Data format: `~/Gloamlog/YYYY-MM-DD.md`
 
 One file per day. Directory is `NSHomeDirectory()/daily-log`, created on save. Date is formatted with `en_US_POSIX` locale, local timezone.
 
@@ -79,7 +79,7 @@ Mechanism is in-process, not launchd.
 ## 5. Non-functional requirements
 
 - No network access, no telemetry, no analytics, no third-party code. The app does not import anything networked.
-- Local files only: `~/daily-log/*.md` plus one `UserDefaults` key (`remindMinutes`).
+- Local files only: `~/Gloamlog/*.md` plus one `UserDefaults` key (`remindMinutes`).
 - Privacy: log content never leaves the machine unless the user moves the files.
 - Low footprint: one 60 s timer; `Store.isLogged` re-reads files from disk (see limitations).
 - Opens in the user's own markdown tooling; plain text for portability.
@@ -87,7 +87,7 @@ Mechanism is in-process, not launchd.
 ## 6. Security notes
 
 - Ad-hoc signed (`--sign -`), not notarised, no Developer ID. Recipients of the zip hit Gatekeeper: right-click, Open the first time, or `xattr -dr com.apple.quarantine`.
-- No App Sandbox, no entitlements file, no hardened runtime. The app has normal user-level file access and reads/writes `~/daily-log`; it does not touch anything else.
+- No App Sandbox, no entitlements file, no hardened runtime. The app has normal user-level file access and reads/writes `~/Gloamlog`; it does not touch anything else.
 - Registers itself as a login item without prompting; user can remove it under System Settings, General, Login Items.
 - Log files are unencrypted and world-readable per the user's umask.
 - Legacy script: binds `127.0.0.1` on an ephemeral port, no auth or CSRF token; any local process can post to it during its short lifetime.
@@ -124,6 +124,6 @@ Context: in this environment `@State` is an attached macro needing the `SwiftUIM
 Context: the script version used a launchd `StartCalendarInterval` job. Decision: the app owns its schedule so the time is user-editable in the UI, it can re-raise its own window, and there is nothing to install besides the app. Consequence: reminder works only while the app is running; granularity is 60 s; relies on `SMAppService` for survival across logins.
 
 **ADR-3: Markdown files instead of the Notion API.**
-Decision: plain `.md` files in `~/daily-log`. Reasons: no network, no tokens or credentials to store, no account dependency, works offline, greppable, user can import to Notion by hand. Consequence: no sync or cross-device access.
+Decision: plain `.md` files in `~/Gloamlog`. Reasons: no network, no tokens or credentials to store, no account dependency, works offline, greppable, user can import to Notion by hand. Consequence: no sync or cross-device access.
 
 **ADR-4: Single source file, no project.** Keeps the build to one `swiftc` call and the repo reviewable in one read. Revisit when tests are added.

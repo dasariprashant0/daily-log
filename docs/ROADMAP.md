@@ -1,6 +1,6 @@
 # Roadmap: v0.3 and beyond
 
-This is a ranked list of bets, not a promise. Rank reflects value to people who already use Daily Log divided by effort and risk, and every item keeps the core promise: local-only, plain markdown, no telemetry unless stated. Items move up when real usage or feedback supports them. Nothing here ships before v0.2 has been used for a few weeks.
+This is a ranked list of bets, not a promise. Rank reflects value to people who already use Gloamlog divided by effort and risk, and every item keeps the core promise: local-only, plain markdown, no telemetry unless stated. Items move up when real usage or feedback supports them. Nothing here ships before v0.2 has been used for a few weeks.
 
 ## Principles any item must pass
 
